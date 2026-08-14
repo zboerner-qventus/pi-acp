@@ -64,6 +64,34 @@ test('PiAcpAgent: newSession publishes context usage only after the response is 
   )
 })
 
+test('PiAcpAgent: usage_update carries the cumulative session cost when pi reports one', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+  proc.sessionStats = { cost: 0.0241, contextUsage: { tokens: 1_234, contextWindow: 100_000 } }
+  const session = makeSession(proc, conn)
+
+  const agent = new PiAcpAgent(asAgentConn(conn), {} as any)
+  ;(agent as any).sessions = new FakeSessions(session) as any
+
+  await agent.newSession({ cwd: process.cwd(), mcpServers: [] } as any)
+  await drainScheduledWork()
+
+  assert.deepEqual(
+    conn.updates.filter(u => u.update.sessionUpdate === 'usage_update'),
+    [
+      {
+        sessionId: 's1',
+        update: {
+          sessionUpdate: 'usage_update',
+          used: 1_234,
+          size: 100_000,
+          cost: { amount: 0.0241, currency: 'USD' }
+        }
+      }
+    ]
+  )
+})
+
 test('PiAcpAgent: newSession tolerates a failing get_session_stats', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()

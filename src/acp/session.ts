@@ -60,9 +60,9 @@ const EXTENSION_UI_RAW_INPUT_KEYS = ['title', 'message', 'options', 'placeholder
 const CHOICE_OPTION_PREFIX = 'choice-'
 
 /**
- * Map pi's `stats.contextUsage` to an ACP `usage_update`. Returns null whenever pi
- * reports no trustworthy token count (e.g. `tokens: null` right after compaction) or
- * the values are not usable integers.
+ * Map pi's `stats.contextUsage` (plus cumulative `stats.cost`) to an ACP `usage_update`.
+ * Returns null whenever pi reports no trustworthy token count (e.g. `tokens: null` right
+ * after compaction) or the values are not usable integers.
  */
 function toUsageUpdate(stats: PiSessionStats | null | undefined): SessionUpdate | null {
   const used = stats?.contextUsage?.tokens
@@ -71,7 +71,11 @@ function toUsageUpdate(stats: PiSessionStats | null | undefined): SessionUpdate 
   if (typeof used !== 'number' || !Number.isSafeInteger(used) || used < 0) return null
   if (typeof size !== 'number' || !Number.isSafeInteger(size) || size <= 0) return null
 
-  return { sessionUpdate: 'usage_update', used, size }
+  const amount = stats?.cost
+  const cost =
+    typeof amount === 'number' && Number.isFinite(amount) && amount >= 0 ? { amount, currency: 'USD' } : undefined
+
+  return { sessionUpdate: 'usage_update', used, size, ...(cost ? { cost } : {}) }
 }
 
 function findUniqueLineNumber(text: string, needle: string): number | undefined {

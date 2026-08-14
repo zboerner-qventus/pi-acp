@@ -26,7 +26,7 @@ Expect some minor breaking changes.
   - Adds a small set of built-in commands for headless/editor usage
   - Supports skill commands (if enabled in pi settings, they appear as `/skill:skill-name` in the ACP client)
 - Context window usage
-  - Reports pi's real context occupancy (`get_session_stats` → `contextUsage`) to the client as ACP `usage_update` after each turn, on `session/new` and `session/load`, and after a model switch
+  - Reports pi's real context occupancy (`get_session_stats` → `contextUsage`) and cumulative session cost to the client as ACP `usage_update` after each turn, on `session/new` and `session/load`, and after a model switch
   - Requires a pi version whose `get_session_stats` response includes `contextUsage`; otherwise no usage is reported
   - Right after compaction pi may not have a trustworthy token count yet, so the client keeps the previous value until the next model response
 - Skills are loaded by pi directly and are available in ACP sessions
