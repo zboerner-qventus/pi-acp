@@ -38,8 +38,7 @@ import {
   bashTerminalExitMeta,
   bashTerminalInfoMeta,
   bashTerminalOutputMeta,
-  isBashTool,
-  truncateToLastLines
+  isBashTool
 } from './translate/bash.js'
 import { promptToPiMessage } from './translate/prompt.js'
 import { loadSlashCommands, parseCommandArgs, toAvailableCommands } from './slash-commands.js'
