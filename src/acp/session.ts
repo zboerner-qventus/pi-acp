@@ -1161,9 +1161,7 @@ export class PiAcpSession {
         }
       })
       const value = result?.action === 'accept' ? result.content?.value : undefined
-      await this.proc.sendExtensionUiResponse(
-        typeof value === 'string' ? { id, value } : { id, cancelled: true }
-      )
+      await this.proc.sendExtensionUiResponse(typeof value === 'string' ? { id, value } : { id, cancelled: true })
     } catch {
       await this.proc.sendExtensionUiResponse({ id, cancelled: true })
     }
