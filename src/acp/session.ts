@@ -436,6 +436,9 @@ export class PiAcpSession {
   // A title has been sent for this session; later prompts must not rename the thread.
   private titleEmitted = false
 
+  // Options from the most recent select, so a follow-up free-text prompt can still show them.
+  private lastOfferedOptions: { heading: string; options: string[] } | null = null
+
   // Ensure `session/update` notifications are sent in order and can be awaited
   // before completing a `session/prompt` request.
   private lastEmit: Promise<void> = Promise.resolve()
@@ -1215,22 +1218,28 @@ export class PiAcpSession {
    */
   private async handleExtensionInput(ev: PiRpcEvent, id: string): Promise<void> {
     const method = stringProp(ev, 'method') ?? 'input'
-    const { heading, body } = splitPromptText(stringProp(ev, 'title') ?? 'Pi input')
-    const title = [heading, body].filter(Boolean).join('\n')
+    const prompt = stringProp(ev, 'title') ?? 'Pi input'
     const placeholder = stringProp(ev, 'placeholder')
     const prefill = stringProp(ev, 'prefill')
+    // Pi asks questions one dialog at a time: choosing "type your own answer" replaces the
+    // list of options with a bare text box. Repeat the options so they stay readable.
+    const offered = this.takeOfferedOptions(prompt)
+    const message = offered ? `${prompt}\n\nOptions offered:\n${offered.join('\n')}` : prompt
+
     try {
       const result = await this.conn.unstable_createElicitation({
         sessionId: this.sessionId,
-        message: title,
+        message,
         mode: 'form',
         requestedSchema: {
           type: 'object',
-          title: heading,
+          // No schema title: clients render it above the form, repeating `message`.
           properties: {
             value: {
               type: 'string',
-              title: placeholder ?? 'Answer',
+              title: 'Answer',
+              // Pi's placeholder is a hint, not a label or a value.
+              ...(placeholder ? { description: placeholder } : {}),
               ...(prefill ? { default: prefill } : {})
             }
           },
@@ -1244,11 +1253,24 @@ export class PiAcpSession {
         sessionUpdate: 'agent_message_chunk',
         content: {
           type: 'text',
-          text: `Pi asked for ${method === 'editor' ? 'editor' : 'text'} input, but this client does not support ACP elicitation, so it was cancelled: ${title}`
+          text: `Pi asked for ${method === 'editor' ? 'editor' : 'text'} input, but this client does not support ACP elicitation, so it was cancelled: ${prompt}`
         } satisfies ContentBlock
       })
       await this.proc.sendExtensionUiResponse({ id, cancelled: true })
     }
+  }
+
+  /**
+   * The options from the select that immediately preceded this prompt, when both describe the
+   * same question. Pi's questionnaire reuses the question as the first line of both dialogs,
+   * which is what ties a "type your own answer" input back to the choices it replaced.
+   * Consumed once, so an unrelated later input does not inherit them.
+   */
+  private takeOfferedOptions(prompt: string): string[] | null {
+    const offered = this.lastOfferedOptions
+    if (!offered) return null
+    this.lastOfferedOptions = null
+    return offered.heading === splitPromptText(prompt).heading ? offered.options : null
   }
 
   private async handleExtensionSelect(ev: PiRpcEvent, id: string): Promise<void> {
@@ -1258,6 +1280,8 @@ export class PiAcpSession {
       await this.proc.sendExtensionUiResponse({ id, cancelled: true })
       return
     }
+
+    this.lastOfferedOptions = { heading: splitPromptText(stringProp(ev, 'title') ?? '').heading, options }
 
     const permissionOptions: PermissionOption[] = options.map((name, index) => ({
       optionId: `${CHOICE_OPTION_PREFIX}${index}`,
