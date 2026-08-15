@@ -400,6 +400,9 @@ export class PiAcpAgent implements ACPAgent {
         // Publish real context usage now that the client knows the sessionId (clients ignore
         // notifications for unknown sessions), so the window size is correct before the first prompt.
         await session.publishContextUsage()
+        // Only emits when pi already has a name (e.g. a resumed session file); an unnamed
+        // session gets its title from the first prompt instead.
+        await session.publishSessionTitle()
 
         try {
           const pi = (await session.proc.getCommands()) as any
@@ -975,12 +978,14 @@ export class PiAcpAgent implements ACPAgent {
     // matching toolResult message. Index them by tool call id so historic
     // tool results can recover their inputs for titles, locations, and rawInput.
     const toolCallArgs = new Map<string, unknown>()
+    let firstUserText: string | undefined
     for (const m of messages) {
       const role = String(m?.role ?? '')
 
       if (role === 'user') {
         const text = normalizePiMessageText(m?.content)
         if (text) {
+          firstUserText ??= text
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
@@ -1101,6 +1106,9 @@ export class PiAcpAgent implements ACPAgent {
     setTimeout(() => {
       void (async () => {
         await session.publishContextUsage()
+        // Pin the resumed thread's title to its first message (or pi's own name) so a later
+        // prompt in this session cannot rename it.
+        await session.publishSessionTitle(firstUserText)
 
         try {
           const pi = (await proc.getCommands()) as any

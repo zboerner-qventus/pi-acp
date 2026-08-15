@@ -76,6 +76,17 @@ function toPermissionOptionKind(label: string): PermissionOption['kind'] {
 }
 
 /**
+ * Pi never names a session on its own, so an ACP client has nothing to show but its
+ * placeholder. Derive a title from the first prompt, mirroring `listPiSessions`' fallback
+ * (first user message, 80 chars) so a live thread and its history entry agree.
+ */
+function toSessionTitle(text: string): string | null {
+  const line = text.replace(/\s+/g, ' ').trim()
+  if (!line) return null
+  return line.length > 80 ? `${line.slice(0, 79)}…` : line
+}
+
+/**
  * Pi prompt text arrives as `"<heading>\n<body>"` (pi-permission-system folds its message
  * into the `ui.select` title). Multi-line titles render badly in clients, so split them.
  */
@@ -422,6 +433,9 @@ export class PiAcpSession {
   // is held, so prompts can be rendered on that tool call instead of a standalone card.
   private activeToolCall: { toolCallId: string; title: string; isBash: boolean } | null = null
 
+  // A title has been sent for this session; later prompts must not rename the thread.
+  private titleEmitted = false
+
   // Ensure `session/update` notifications are sent in order and can be awaited
   // before completing a `session/prompt` request.
   private lastEmit: Promise<void> = Promise.resolve()
@@ -526,6 +540,33 @@ export class PiAcpSession {
 
   wasCancelRequested(): boolean {
     return this.cancelRequested
+  }
+
+  /**
+   * Best-effort: give the client a thread title. Pi only names sessions when asked
+   * (`/name`, `set_session_name`, extensions), so fall back to the first prompt --
+   * without this the client is never told anything and keeps its placeholder title.
+   */
+  async publishSessionTitle(fallbackText?: string): Promise<void> {
+    if (this.titleEmitted) return
+
+    let name: string | null = null
+    try {
+      const state = (await this.proc.getState()) as { sessionName?: unknown } | null
+      if (typeof state?.sessionName === 'string' && state.sessionName.trim()) name = state.sessionName.trim()
+    } catch {
+      // A missing state response is not worth failing a turn over.
+    }
+
+    const title = name ?? (fallbackText ? toSessionTitle(fallbackText) : null)
+    if (!title) return
+
+    this.titleEmitted = true
+    this.emit({
+      sessionUpdate: 'session_info_update',
+      title,
+      updatedAt: new Date().toISOString()
+    })
   }
 
   private emit(update: SessionUpdate): void {
@@ -680,6 +721,9 @@ export class PiAcpSession {
     this.cancelRequested = false
     this.inAgentLoop = false
     this.lastAssistantError = null
+
+    // Pi has no title for a fresh session; derive one from the prompt that started it.
+    void this.publishSessionTitle(t.message)
 
     this.pendingTurn = { resolve: t.resolve, reject: t.reject }
 
@@ -1097,6 +1141,7 @@ export class PiAcpSession {
         // buffer name live. Mirrors the `/name` slash-command path in agent.ts.
         const name = typeof (ev as any).name === 'string' ? (ev as any).name.trim() : ''
         if (name) {
+          this.titleEmitted = true
           this.emit({
             sessionUpdate: 'session_info_update',
             title: name,
