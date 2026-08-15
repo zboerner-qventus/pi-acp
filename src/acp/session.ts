@@ -62,6 +62,29 @@ const EXTENSION_UI_RAW_INPUT_KEYS = ['title', 'message', 'options', 'placeholder
 const CHOICE_OPTION_PREFIX = 'choice-'
 
 /**
+ * Pi hands us permission choices as plain labels (pi's own gates and extensions such as
+ * pi-permission-system all go through `ui.select`), but ACP clients style and bind keys by
+ * `kind`. Classify from the label so "No" is not rendered as an allow button.
+ */
+function toPermissionOptionKind(label: string): PermissionOption['kind'] {
+  const text = label.trim().toLowerCase()
+  const rejects = /^(no|n|deny|denied|reject|cancel|abort|never|don't|do not)\b/.test(text) || text.includes('deny')
+  const persists = /\b(session|always|all future|from now on)\b/.test(text)
+
+  if (rejects) return persists ? 'reject_always' : 'reject_once'
+  return persists ? 'allow_always' : 'allow_once'
+}
+
+/**
+ * Pi prompt text arrives as `"<heading>\n<body>"` (pi-permission-system folds its message
+ * into the `ui.select` title). Multi-line titles render badly in clients, so split them.
+ */
+function splitPromptText(text: string): { heading: string; body: string } {
+  const [first = '', ...rest] = text.split('\n')
+  return { heading: first.trim(), body: rest.join('\n').trim() }
+}
+
+/**
  * Map pi's `stats.contextUsage` (plus cumulative `stats.cost`) to an ACP `usage_update`.
  * Returns null whenever pi reports no trustworthy token count (e.g. `tokens: null` right
  * after compaction) or the values are not usable integers.
@@ -395,6 +418,10 @@ export class PiAcpSession {
   private bashOutputSnapshots = new Map<string, string>()
   private bashRawInputs = new Map<string, unknown>()
 
+  // The tool call pi is currently executing, if any. Permission gates fire while the tool
+  // is held, so prompts can be rendered on that tool call instead of a standalone card.
+  private activeToolCall: { toolCallId: string; title: string; isBash: boolean } | null = null
+
   // Ensure `session/update` notifications are sent in order and can be awaited
   // before completing a `session/prompt` request.
   private lastEmit: Promise<void> = Promise.resolve()
@@ -646,6 +673,7 @@ export class PiAcpSession {
     this.bashToolCallIds.delete(toolCallId)
     this.bashOutputSnapshots.delete(toolCallId)
     this.bashRawInputs.delete(toolCallId)
+    if (this.activeToolCall?.toolCallId === toolCallId) this.activeToolCall = null
   }
 
   private startTurn(t: QueuedTurn): void {
@@ -821,6 +849,7 @@ export class PiAcpSession {
           const locations = toToolCallLocations(args, this.cwd)
           const existingStatus = this.currentToolCalls.get(toolCallId)
           this.currentToolCalls.set(toolCallId, 'in_progress')
+          this.activeToolCall = { toolCallId, title: toToolTitle(toolName, args, this.cwd), isBash: true }
           this.emitBashToolCall({
             sessionUpdate: existingStatus ? 'tool_call_update' : 'tool_call',
             toolCallId,
@@ -861,6 +890,7 @@ export class PiAcpSession {
         const locations = toToolCallLocations(args, this.cwd, line)
 
         const title = toToolTitle(toolName, args, this.cwd)
+        this.activeToolCall = { toolCallId, title, isBash: false }
 
         // If we already surfaced the tool call while the model streamed it, just transition.
         if (!this.currentToolCalls.has(toolCallId)) {
@@ -1178,7 +1208,7 @@ export class PiAcpSession {
     const permissionOptions: PermissionOption[] = options.map((name, index) => ({
       optionId: `${CHOICE_OPTION_PREFIX}${index}`,
       name,
-      kind: 'allow_once'
+      kind: toPermissionOptionKind(name)
     }))
 
     const selected = await this.requestExtensionPermission(id, ev, permissionOptions)
@@ -1211,22 +1241,55 @@ export class PiAcpSession {
     ev: PiRpcEvent,
     options: PermissionOption[]
   ): Promise<PermissionResponse | null> {
+    // A gate fires while pi holds the tool call, so render the prompt on that tool call:
+    // the client then shows which call is blocked (title, path/command, diff) with the
+    // options attached to it, instead of a standalone card carrying only raw text.
+    const active = this.activeToolCall
+
     try {
       return await this.conn.requestPermission({
         sessionId: this.sessionId,
-        toolCall: extensionUiToolCall(id, ev),
+        toolCall: active ? this.permissionPromptOnToolCall(active, ev) : extensionUiToolCall(id, ev),
         options
       })
     } catch {
       await this.proc.sendExtensionUiResponse({ id, cancelled: true })
       return null
+    } finally {
+      // The prompt text is only relevant while unanswered; restore the tool call's own
+      // content so an answered gate leaves no stale question behind.
+      if (active) {
+        this.emit({
+          sessionUpdate: 'tool_call_update',
+          toolCallId: active.toolCallId,
+          content: active.isBash ? bashTerminalContent(active.toolCallId) : []
+        })
+      }
+    }
+  }
+
+  private permissionPromptOnToolCall(active: { toolCallId: string; title: string; isBash: boolean }, ev: PiRpcEvent) {
+    const { heading, body } = splitPromptText(stringProp(ev, 'title') ?? '')
+    // `confirm` carries a separate message; `select` folds it into the title.
+    const text = [body || heading, stringProp(ev, 'message')].filter(Boolean).join('\n\n')
+    const prompt: ToolCallContent[] = text ? [{ type: 'content', content: { type: 'text', text } }] : []
+
+    return {
+      toolCallId: active.toolCallId,
+      // Repeat the title so clients that do not already know this tool call still render it.
+      title: active.title,
+      status: 'in_progress' as const,
+      // Keep the terminal block, or the client loses the bash output view.
+      content: [...(active.isBash ? bashTerminalContent(active.toolCallId) : []), ...prompt]
     }
   }
 }
 
 function extensionUiToolCall(id: string, ev: PiRpcEvent) {
   const method = stringProp(ev, 'method') ?? 'ui'
-  const title = stringProp(ev, 'title') ?? `Pi ${method}`
+  const { heading, body } = splitPromptText(stringProp(ev, 'title') ?? `Pi ${method}`)
+  const text = [body, stringProp(ev, 'message')].filter(Boolean).join('\n\n')
+  const content: ToolCallContent[] = text ? [{ type: 'content', content: { type: 'text', text } }] : []
   const rawInput: Record<string, unknown> = { method }
 
   for (const key of EXTENSION_UI_RAW_INPUT_KEYS) {
@@ -1235,10 +1298,11 @@ function extensionUiToolCall(id: string, ev: PiRpcEvent) {
 
   return {
     toolCallId: `pi-ui-${id}`,
-    title,
+    title: heading || `Pi ${method}`,
     kind: 'other' as const,
     status: 'pending' as const,
-    rawInput
+    rawInput,
+    ...(content.length ? { content } : {})
   }
 }
 
