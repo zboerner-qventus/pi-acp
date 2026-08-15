@@ -1165,11 +1165,13 @@ export class PiAcpSession {
    * Pi `input`/`editor` UI requests carry freeform text (ask_user custom answers,
    * comments, multi-select). ACP permission options cannot carry text, so surface
    * them via the (UNSTABLE) `elicitation/create` form mechanism. Clients that do
-   * not support elicitation respond with an error, which we treat as a cancel
-   * (same behaviour as before this change).
+   * not support elicitation respond with an error; say so instead of dropping the
+   * request silently, since pi is left waiting on an answer nobody was shown.
    */
   private async handleExtensionInput(ev: PiRpcEvent, id: string): Promise<void> {
-    const title = stringProp(ev, 'title') ?? 'Pi input'
+    const method = stringProp(ev, 'method') ?? 'input'
+    const { heading, body } = splitPromptText(stringProp(ev, 'title') ?? 'Pi input')
+    const title = [heading, body].filter(Boolean).join('\n')
     const placeholder = stringProp(ev, 'placeholder')
     const prefill = stringProp(ev, 'prefill')
     try {
@@ -1179,7 +1181,7 @@ export class PiAcpSession {
         mode: 'form',
         requestedSchema: {
           type: 'object',
-          title,
+          title: heading,
           properties: {
             value: {
               type: 'string',
@@ -1193,6 +1195,13 @@ export class PiAcpSession {
       const value = result?.action === 'accept' ? result.content?.value : undefined
       await this.proc.sendExtensionUiResponse(typeof value === 'string' ? { id, value } : { id, cancelled: true })
     } catch {
+      this.emit({
+        sessionUpdate: 'agent_message_chunk',
+        content: {
+          type: 'text',
+          text: `Pi asked for ${method === 'editor' ? 'editor' : 'text'} input, but this client does not support ACP elicitation, so it was cancelled: ${title}`
+        } satisfies ContentBlock
+      })
       await this.proc.sendExtensionUiResponse({ id, cancelled: true })
     }
   }

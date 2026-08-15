@@ -56,7 +56,7 @@ test('PiAcpSession: input UI request with declined elicitation is cancelled', as
   assert.deepEqual(proc.extensionUiResponses, [{ id: 'ui-1', cancelled: true }])
 })
 
-test('PiAcpSession: input UI request with a failing elicitation is cancelled', async () => {
+test('PiAcpSession: input UI request with a failing elicitation is cancelled and explained', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()
   conn.elicitationError = new Error('boom')
@@ -68,6 +68,24 @@ test('PiAcpSession: input UI request with a failing elicitation is cancelled', a
 
   assert.equal(conn.elicitationRequests.length, 1)
   assert.deepEqual(proc.extensionUiResponses, [{ id: 'ui-1', cancelled: true }])
+  // Silently dropping it leaves the user wondering why pi stopped asking.
+  const text = (conn.updates.at(-1)!.update as any).content.text
+  assert.match(text, /does not support ACP elicitation/)
+  assert.match(text, /Your answer/)
+})
+
+test('PiAcpSession: declined elicitation is cancelled without an explanation', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+  conn.elicitationResponse = { action: 'decline' }
+  makeSession(conn, proc)
+
+  proc.emit({ type: 'extension_ui_request', id: 'ui-1', method: 'input', title: 'Your answer' })
+
+  await new Promise(r => setTimeout(r, 0))
+
+  assert.deepEqual(proc.extensionUiResponses, [{ id: 'ui-1', cancelled: true }])
+  assert.equal(conn.updates.length, 0)
 })
 
 test('PiAcpSession: editor UI request passes prefill as the schema default', async () => {
