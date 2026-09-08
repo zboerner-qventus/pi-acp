@@ -68,7 +68,12 @@ const OPTION_LABEL_MAX = 72
  * pi-permission-system all go through `ui.select`), but ACP clients style and bind keys by
  * `kind`. Classify from the label so "No" is not rendered as an allow button.
  */
-function toPermissionOptionKind(label: string): PermissionOption['kind'] {
+function toPermissionOptionKind(option: string): PermissionOption['kind'] {
+  // Pi appends each choice's description, and "session"/"always" in prose is not a grant.
+  const [label = ''] = option
+    .trim()
+    .replace(/^\d+[.)]\s*/, '')
+    .split(/\s+[\u2014\u2013]\s+/)
   const text = label.trim().toLowerCase()
   const rejects = /^(no|n|deny|denied|reject|cancel|abort|never|don't|do not)\b/.test(text) || text.includes('deny')
   const persists = /\b(session|always|all future|from now on)\b/.test(text)

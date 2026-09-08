@@ -79,6 +79,32 @@ test('PiAcpSession: classifies permission option kinds from their labels', async
   ])
 })
 
+test('PiAcpSession: classifies option kinds from the label, not the appended description', async () => {
+  const conn = new FakeAgentSideConnection()
+  conn.nextPermissionResponse = { outcome: { outcome: 'selected', optionId: 'choice-0' } }
+  const proc = new FakePiRpcProcess()
+  makeSession(proc, conn)
+
+  proc.emit({
+    type: 'extension_ui_request',
+    id: 'ui-6',
+    method: 'select',
+    title: 'Which fix first?',
+    options: [
+      '1. Commit the option-overflow fix \u2014 commits the session.ts change and always runs the tests',
+      '2. No, hold off \u2014 stops here so you can review the change before I touch anything else',
+      '3. Allow for this session \u2014 a persistence keyword in the label still counts'
+    ]
+  })
+
+  await settle()
+
+  assert.deepEqual(
+    (conn.permissionRequests[0] as any).options.map((o: any) => o.kind),
+    ['allow_once', 'reject_once', 'allow_always']
+  )
+})
+
 test('PiAcpSession: clears the prompt from the tool call once it is answered', async () => {
   const conn = new FakeAgentSideConnection()
   conn.nextPermissionResponse = { outcome: { outcome: 'selected', optionId: 'choice-0' } }
