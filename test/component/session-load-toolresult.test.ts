@@ -75,10 +75,10 @@ test('PiAcpAgent: loadSession replays toolResult as tool_call + tool_call_update
   }
 })
 
-test('PiAcpAgent: loadSession replays read toolResult with locations and plain title by default', async () => {
+test('PiAcpAgent: loadSession replays read toolResult with locations and plain title when descriptive titles are disabled', async () => {
   const originalSpawn = PiRpcProcess.spawn
   const previous = process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES
-  delete process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES
+  process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES = 'false'
   ;(PiRpcProcess as any).spawn = async () => {
     return {
       onEvent: () => () => {},
@@ -138,10 +138,10 @@ test('PiAcpAgent: loadSession replays read toolResult with locations and plain t
   }
 })
 
-test('PiAcpAgent: loadSession replays read toolResult with locations and descriptive title when enabled', async () => {
+test('PiAcpAgent: loadSession replays read toolResult with locations and descriptive title by default', async () => {
   const originalSpawn = PiRpcProcess.spawn
   const previous = process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES
-  process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES = 'true'
+  delete process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES
   ;(PiRpcProcess as any).spawn = async () => {
     return {
       onEvent: () => () => {},
@@ -193,7 +193,7 @@ test('PiAcpAgent: loadSession replays read toolResult with locations and descrip
 test('PiAcpAgent: loadSession recovers tool args from the assistant toolCall block', async () => {
   const originalSpawn = PiRpcProcess.spawn
   const previousTitles = process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES
-  delete process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES
+  process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES = 'false'
   ;(PiRpcProcess as any).spawn = async () => {
     return {
       onEvent: () => () => {},
@@ -257,7 +257,7 @@ test('PiAcpAgent: loadSession recovers tool args from the assistant toolCall blo
 test('PiAcpAgent: loadSession replays edit toolResult as a structured diff from args', async () => {
   const originalSpawn = PiRpcProcess.spawn
   const previousTitles = process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES
-  delete process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES
+  process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES = 'false'
   ;(PiRpcProcess as any).spawn = async () => {
     return {
       onEvent: () => () => {},

@@ -210,7 +210,7 @@ function toDisplayPath(path: string, cwd: string): string {
 }
 
 function descriptiveToolTitlesEnabled(): boolean {
-  return process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES === 'true'
+  return process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES !== 'false'
 }
 
 export function toToolTitle(toolName: string, args: unknown, cwd: string): string {

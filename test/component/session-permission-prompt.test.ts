@@ -149,7 +149,7 @@ test('PiAcpSession: attaches a confirm prompt to the gated tool call with its me
 
   const request = conn.permissionRequests[0] as any
   assert.equal(request.toolCall.toolCallId, 't2')
-  assert.equal(request.toolCall.title, 'read')
+  assert.equal(request.toolCall.title, 'Read package.json')
   assert.deepEqual(request.toolCall.content, [
     {
       type: 'content',

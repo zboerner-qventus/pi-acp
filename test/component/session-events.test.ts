@@ -491,9 +491,9 @@ test('PiAcpSession: preserves ordering when auto_retry_start is interleaved with
   )
 })
 
-test('PiAcpSession: emits tool locations at execution start', async () => {
+test('PiAcpSession: keeps plain tool titles when descriptive titles are disabled', async () => {
   const previous = process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES
-  delete process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES
+  process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES = 'false'
 
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()
@@ -540,9 +540,9 @@ test('PiAcpSession: emits tool locations at execution start', async () => {
   }
 })
 
-test('PiAcpSession: can emit descriptive tool titles at execution start', async () => {
+test('PiAcpSession: emits descriptive tool titles at execution start by default', async () => {
   const previous = process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES
-  process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES = 'true'
+  delete process.env.PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES
 
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()
