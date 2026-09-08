@@ -161,3 +161,83 @@ test('PiAcpSession: attaches a confirm prompt to the gated tool call with its me
   ])
   assert.deepEqual(proc.extensionUiResponses, [{ id: 'ui-2', confirmed: true }])
 })
+
+test('PiAcpSession: repeats long option text as wrapping content and shortens the button labels', async () => {
+  const conn = new FakeAgentSideConnection()
+  conn.nextPermissionResponse = { outcome: { outcome: 'selected', optionId: 'choice-1' } }
+  const proc = new FakePiRpcProcess()
+  makeSession(proc, conn)
+
+  const long =
+    'Flip the default in pi-acp so descriptive titles are on and the env var becomes an opt-out (Recommended)'
+  proc.emit({
+    type: 'extension_ui_request',
+    id: 'ui-3',
+    method: 'select',
+    title: 'How do you want descriptive tool titles enabled?',
+    options: [long, 'Add the env var to my Zed settings']
+  })
+
+  await settle()
+
+  const request = conn.permissionRequests[0] as any
+  assert.equal(request.options[0].name, `${`1. ${long}`.slice(0, 71).trimEnd()}\u2026`)
+  assert.ok(request.options[0].name.length <= 76, 'button label stays inside the panel')
+  assert.equal(request.options[1].name, '2. Add the env var to my Zed settings')
+  assert.deepEqual(request.toolCall.content.at(-1), {
+    type: 'content',
+    content: { type: 'text', text: `1. ${long}\n2. Add the env var to my Zed settings` }
+  })
+  // The reply still maps back by index, not by the shortened label.
+  assert.deepEqual(proc.extensionUiResponses, [{ id: 'ui-3', value: 'Add the env var to my Zed settings' }])
+})
+
+test('PiAcpSession: does not double-number options pi already numbered', async () => {
+  const conn = new FakeAgentSideConnection()
+  conn.nextPermissionResponse = { outcome: { outcome: 'selected', optionId: 'choice-0' } }
+  const proc = new FakePiRpcProcess()
+  makeSession(proc, conn)
+
+  const first = '1. Build the titler now, env-var gated - implements PI_ACP_TITLE_MODEL and shells out to pi -p'
+  proc.emit({
+    type: 'extension_ui_request',
+    id: 'ui-5',
+    method: 'select',
+    title: 'Should I build the thread titler next?',
+    options: [first, '2. Type something.']
+  })
+
+  await settle()
+
+  const request = conn.permissionRequests[0] as any
+  assert.equal(request.options[0].name, `${first.slice(0, 71).trimEnd()}\u2026`)
+  assert.equal(request.options[1].name, '2. Type something.')
+  assert.deepEqual(request.toolCall.content.at(-1), {
+    type: 'content',
+    content: { type: 'text', text: `${first}\n2. Type something.` }
+  })
+})
+
+test('PiAcpSession: leaves short option labels untouched', async () => {
+  const conn = new FakeAgentSideConnection()
+  conn.nextPermissionResponse = { outcome: { outcome: 'selected', optionId: 'choice-0' } }
+  const proc = new FakePiRpcProcess()
+  makeSession(proc, conn)
+
+  proc.emit({
+    type: 'extension_ui_request',
+    id: 'ui-4',
+    method: 'select',
+    title: 'Permission Required\nAllow?',
+    options: ['Yes', 'No']
+  })
+
+  await settle()
+
+  const request = conn.permissionRequests[0] as any
+  assert.deepEqual(
+    request.options.map((o: any) => o.name),
+    ['Yes', 'No']
+  )
+  assert.deepEqual(request.toolCall.content, [{ type: 'content', content: { type: 'text', text: 'Allow?' } }])
+})

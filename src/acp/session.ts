@@ -60,6 +60,8 @@ const CONFIRM_PERMISSION_OPTIONS: PermissionOption[] = [
 ]
 const EXTENSION_UI_RAW_INPUT_KEYS = ['title', 'message', 'options', 'placeholder', 'prefill'] as const
 const CHOICE_OPTION_PREFIX = 'choice-'
+// Clients render permission options as single-line buttons that neither wrap nor ellipsize.
+const OPTION_LABEL_MAX = 72
 
 /**
  * Pi hands us permission choices as plain labels (pi's own gates and extensions such as
@@ -90,6 +92,15 @@ function toSessionTitle(text: string): string | null {
  * Pi prompt text arrives as `"<heading>\n<body>"` (pi-permission-system folds its message
  * into the `ui.select` title). Multi-line titles render badly in clients, so split them.
  */
+function truncateLabel(name: string): string {
+  return name.length > OPTION_LABEL_MAX ? `${name.slice(0, OPTION_LABEL_MAX - 1).trimEnd()}\u2026` : name
+}
+
+// Pi's questionnaire already numbers its choices ("1. label - description"); others don't.
+function withOrdinal(name: string, index: number): string {
+  return /^\s*\d+[.)]\s/.test(name) ? name.trim() : `${index + 1}. ${name}`
+}
+
 function splitPromptText(text: string): { heading: string; body: string } {
   const [first = '', ...rest] = text.split('\n')
   return { heading: first.trim(), body: rest.join('\n').trim() }
@@ -1283,13 +1294,22 @@ export class PiAcpSession {
 
     this.lastOfferedOptions = { heading: splitPromptText(stringProp(ev, 'title') ?? '').heading, options }
 
+    const overflows = options.some(option => option.length > OPTION_LABEL_MAX)
     const permissionOptions: PermissionOption[] = options.map((name, index) => ({
       optionId: `${CHOICE_OPTION_PREFIX}${index}`,
-      name,
+      name: overflows ? truncateLabel(withOrdinal(name, index)) : name,
       kind: toPermissionOptionKind(name)
     }))
+    const optionList: ToolCallContent[] = overflows
+      ? [
+          {
+            type: 'content',
+            content: { type: 'text', text: options.map((name, index) => withOrdinal(name, index)).join('\n') }
+          }
+        ]
+      : []
 
-    const selected = await this.requestExtensionPermission(id, ev, permissionOptions)
+    const selected = await this.requestExtensionPermission(id, ev, permissionOptions, optionList)
     if (selected === null) {
       return
     }
@@ -1317,7 +1337,8 @@ export class PiAcpSession {
   private async requestExtensionPermission(
     id: string,
     ev: PiRpcEvent,
-    options: PermissionOption[]
+    options: PermissionOption[],
+    extraContent: ToolCallContent[] = []
   ): Promise<PermissionResponse | null> {
     // A gate fires while pi holds the tool call, so render the prompt on that tool call:
     // the client then shows which call is blocked (title, path/command, diff) with the
@@ -1327,7 +1348,9 @@ export class PiAcpSession {
     try {
       return await this.conn.requestPermission({
         sessionId: this.sessionId,
-        toolCall: active ? this.permissionPromptOnToolCall(active, ev) : extensionUiToolCall(id, ev),
+        toolCall: active
+          ? this.permissionPromptOnToolCall(active, ev, extraContent)
+          : extensionUiToolCall(id, ev, extraContent),
         options
       })
     } catch {
@@ -1346,7 +1369,11 @@ export class PiAcpSession {
     }
   }
 
-  private permissionPromptOnToolCall(active: { toolCallId: string; title: string; isBash: boolean }, ev: PiRpcEvent) {
+  private permissionPromptOnToolCall(
+    active: { toolCallId: string; title: string; isBash: boolean },
+    ev: PiRpcEvent,
+    extraContent: ToolCallContent[] = []
+  ) {
     const { heading, body } = splitPromptText(stringProp(ev, 'title') ?? '')
     // `confirm` carries a separate message; `select` folds it into the title.
     const text = [body || heading, stringProp(ev, 'message')].filter(Boolean).join('\n\n')
@@ -1358,16 +1385,17 @@ export class PiAcpSession {
       title: active.title,
       status: 'in_progress' as const,
       // Keep the terminal block, or the client loses the bash output view.
-      content: [...(active.isBash ? bashTerminalContent(active.toolCallId) : []), ...prompt]
+      content: [...(active.isBash ? bashTerminalContent(active.toolCallId) : []), ...prompt, ...extraContent]
     }
   }
 }
 
-function extensionUiToolCall(id: string, ev: PiRpcEvent) {
+function extensionUiToolCall(id: string, ev: PiRpcEvent, extraContent: ToolCallContent[] = []) {
   const method = stringProp(ev, 'method') ?? 'ui'
   const { heading, body } = splitPromptText(stringProp(ev, 'title') ?? `Pi ${method}`)
   const text = [body, stringProp(ev, 'message')].filter(Boolean).join('\n\n')
   const content: ToolCallContent[] = text ? [{ type: 'content', content: { type: 'text', text } }] : []
+  content.push(...extraContent)
   const rawInput: Record<string, unknown> = { method }
 
   for (const key of EXTENSION_UI_RAW_INPUT_KEYS) {
