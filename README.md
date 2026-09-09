@@ -120,6 +120,9 @@ Point your ACP client to the built `dist/index.js`:
 - When disabled, compliant ACP clients should avoid sending embedded `resource` blocks. If they send them anyway, `pi-acp` still degrades gracefully by converting them into plain-text prompt context.
 - `PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES=false` disables the descriptive ACP tool titles for file tools like `read`, `write`, and `edit`.
 - Default: unset/any other value means file tools get descriptive titles such as `Read src/acp/session.ts (1 - 40)`. Bash titles always show the command text.
+- `PI_ACP_TITLE_MODEL=<provider>/<model>` names a cheap model that titles the thread, e.g. `amazon-bedrock/us.anthropic.claude-haiku-4-5`. After turns 1, 3, 6, 10, 15... `pi-acp` runs a one-shot `pi --print` over the user's messages and sends the result as an ACP `session_info_update`, so the title tracks a thread as it drifts. Tools, extensions, skills and context files are disabled for that run, and failures are silent.
+- Default: unset means no titler, and the thread keeps the title derived from its first prompt. An explicit name (`/name`, `set_session_name`) always wins over a generated one.
+- Zed only summarises its own native threads, so an external ACP agent has to title itself; nothing `pi-acp` sends can make Zed's `thread_summary_model` run.
 - `PI_ACP_BASH_MAX_OUTPUT_LINES=N` limits the number of bash output lines rendered in the client's terminal view to the last `N` lines for **live** tool calls, matching pi's native TUI behavior. The full output is always preserved in `rawOutput` for the model/session history. Resumed (`loadSession`) replays always render the full output.
 - Default: unset means all lines are streamed (existing behavior).
 
@@ -133,7 +136,8 @@ You can add the environment variables in the Zed settings with:
       "args": ["/path/to/pi-acp/dist/index.js"],
       "env": {
           "PI_ACP_ENABLE_EMBEDDED_CONTEXT": "true",
-          "PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES": "false"
+          "PI_ACP_ENABLE_DESCRIPTIVE_TOOL_TITLES": "false",
+          "PI_ACP_TITLE_MODEL": "amazon-bedrock/us.anthropic.claude-haiku-4-5"
       }
     }
   }

@@ -29,6 +29,7 @@ import {
   truncateToLastLines
 } from './translate/bash.js'
 import { toolResultToText } from './translate/pi-tools.js'
+import { generateThreadTitle, isRetitleTurn, titleModel } from './thread-title.js'
 
 type SessionCreateParams = {
   cwd: string
@@ -452,6 +453,14 @@ export class PiAcpSession {
   // A title has been sent for this session; later prompts must not rename the thread.
   private titleEmitted = false
 
+  // An explicit name (`/name`, `set_session_name`) outranks any generated title, forever.
+  private titlePinned = false
+
+  // User prompts verbatim, as input for the titler.
+  private userPrompts: string[] = []
+  private turnCount = 0
+  private generatingTitle = false
+
   // Options from the most recent select, so a follow-up free-text prompt can still show them.
   private lastOfferedOptions: { heading: string; options: string[] } | null = null
 
@@ -580,12 +589,35 @@ export class PiAcpSession {
     const title = name ?? (fallbackText ? toSessionTitle(fallbackText) : null)
     if (!title) return
 
+    if (name) this.titlePinned = true
     this.titleEmitted = true
     this.emit({
       sessionUpdate: 'session_info_update',
       title,
       updatedAt: new Date().toISOString()
     })
+  }
+
+  /** Ask a cheap model for a title that reflects the whole thread. No-op unless configured. */
+  private async regenerateTitle(): Promise<void> {
+    if (this.titlePinned || this.generatingTitle || !titleModel() || !this.userPrompts.length) return
+
+    this.generatingTitle = true
+    try {
+      const title = await generateThreadTitle(this.userPrompts, this.cwd)
+      if (!title || this.titlePinned) return
+
+      this.titleEmitted = true
+      this.emit({
+        sessionUpdate: 'session_info_update',
+        title,
+        updatedAt: new Date().toISOString()
+      })
+    } catch {
+      // A title is cosmetic; never let it disturb the session.
+    } finally {
+      this.generatingTitle = false
+    }
   }
 
   private emit(update: SessionUpdate): void {
@@ -631,6 +663,9 @@ export class PiAcpSession {
     // Ensure all updates derived from pi events (plus the final usage update) are
     // delivered before we resolve the ACP `session/prompt` request.
     await this.publishContextUsage()
+
+    this.turnCount += 1
+    if (isRetitleTurn(this.turnCount)) void this.regenerateTitle()
 
     const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
     this.pendingTurn?.resolve(reason)
@@ -743,6 +778,7 @@ export class PiAcpSession {
 
     // Pi has no title for a fresh session; derive one from the prompt that started it.
     void this.publishSessionTitle(t.message)
+    this.userPrompts.push(t.message)
 
     this.pendingTurn = { resolve: t.resolve, reject: t.reject }
 
@@ -1161,6 +1197,7 @@ export class PiAcpSession {
         const name = typeof (ev as any).name === 'string' ? (ev as any).name.trim() : ''
         if (name) {
           this.titleEmitted = true
+          this.titlePinned = true
           this.emit({
             sessionUpdate: 'session_info_update',
             title: name,
