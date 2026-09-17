@@ -461,6 +461,9 @@ export class PiAcpSession {
   private turnCount = 0
   private generatingTitle = false
 
+  // Suppresses the `session_info_changed` echo from our own `setSessionName` call below.
+  private settingGeneratedTitle = false
+
   // Options from the most recent select, so a follow-up free-text prompt can still show them.
   private lastOfferedOptions: { heading: string; options: string[] } | null = null
 
@@ -606,6 +609,14 @@ export class PiAcpSession {
     try {
       const title = await generateThreadTitle(this.userPrompts, this.cwd)
       if (!title || this.titlePinned) return
+
+      // So `session/load` recovers this title from pi's state instead of the first message.
+      this.settingGeneratedTitle = true
+      try {
+        await this.proc.setSessionName(title)
+      } finally {
+        this.settingGeneratedTitle = false
+      }
 
       this.titleEmitted = true
       this.emit({
@@ -1195,7 +1206,7 @@ export class PiAcpSession {
         // attached UIs (e.g. agent-shell) can refresh the session title /
         // buffer name live. Mirrors the `/name` slash-command path in agent.ts.
         const name = typeof (ev as any).name === 'string' ? (ev as any).name.trim() : ''
-        if (name) {
+        if (name && !this.settingGeneratedTitle) {
           this.titleEmitted = true
           this.titlePinned = true
           this.emit({

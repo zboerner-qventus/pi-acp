@@ -88,6 +88,21 @@ test('PiAcpSession: truncates a long prompt title', async () => {
   assert.match(title, /…$/)
 })
 
+test('PiAcpSession: a title-model rename does not pin, so later prompts can still retitle', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+  proc.getState = async () => ({ thinkingLevel: 'medium' })
+  const session = makeSession(proc, conn)
+
+  // simulates the setSessionName echo pi sends back mid-regenerateTitle
+  ;(session as any).settingGeneratedTitle = true
+  proc.emit({ type: 'session_info_changed', name: 'Generated title' })
+  ;(session as any).settingGeneratedTitle = false
+
+  assert.deepEqual(titles(conn), [])
+  assert.equal((session as any).titlePinned, false)
+})
+
 test('PiAcpSession: an explicit pi rename wins over the derived title', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()
