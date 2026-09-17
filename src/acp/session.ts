@@ -29,7 +29,7 @@ import {
   truncateToLastLines
 } from './translate/bash.js'
 import { toolResultToText } from './translate/pi-tools.js'
-import { generateThreadTitle, isRetitleTurn, titleModel } from './thread-title.js'
+import { generateThreadTitle, isRetitleTurn, titleModel, type TranscriptEntry } from './thread-title.js'
 
 type SessionCreateParams = {
   cwd: string
@@ -397,7 +397,10 @@ export class SessionManager {
    * Used by session/load: create a session object bound to an existing sessionId/proc
    * if it isn't already registered.
    */
-  getOrCreate(sessionId: string, params: SessionCreateParams & { proc: PiRpcProcess }): PiAcpSession {
+  getOrCreate(
+    sessionId: string,
+    params: SessionCreateParams & { proc: PiRpcProcess; initialTranscript?: TranscriptEntry[] }
+  ): PiAcpSession {
     const existing = this.sessions.get(sessionId)
     if (existing) return existing
 
@@ -407,7 +410,8 @@ export class SessionManager {
       mcpServers: params.mcpServers,
       proc: params.proc,
       conn: params.conn,
-      fileCommands: params.fileCommands ?? []
+      fileCommands: params.fileCommands ?? [],
+      initialTranscript: params.initialTranscript
     })
 
     this.sessions.set(sessionId, session)
@@ -469,8 +473,9 @@ export class PiAcpSession {
   // An explicit name (`/name`, `set_session_name`) outranks any generated title, forever.
   private titlePinned = false
 
-  // User prompts verbatim, as input for the titler.
-  private userPrompts: string[] = []
+  // User prompts and assistant prose, in order, as input for the titler.
+  private transcript: TranscriptEntry[] = []
+  private currentAssistantText = ''
   private turnCount = 0
   private generatingTitle = false
 
@@ -491,6 +496,7 @@ export class PiAcpSession {
     proc: PiRpcProcess
     conn: AgentSideConnection
     fileCommands?: FileSlashCommand[]
+    initialTranscript?: TranscriptEntry[]
   }) {
     this.sessionId = opts.sessionId
     this.cwd = opts.cwd
@@ -498,6 +504,7 @@ export class PiAcpSession {
     this.proc = opts.proc
     this.conn = opts.conn
     this.fileCommands = opts.fileCommands ?? []
+    this.transcript = opts.initialTranscript ?? []
 
     this.proc.onEvent(ev => this.handlePiEvent(ev))
   }
@@ -616,11 +623,11 @@ export class PiAcpSession {
 
   /** Ask a cheap model for a title that reflects the whole thread. No-op unless configured. */
   private async regenerateTitle(): Promise<void> {
-    if (this.titlePinned || this.generatingTitle || !titleModel() || !this.userPrompts.length) return
+    if (this.titlePinned || this.generatingTitle || !titleModel() || !this.transcript.length) return
 
     this.generatingTitle = true
     try {
-      const title = await generateThreadTitle(this.userPrompts, this.cwd)
+      const title = await generateThreadTitle(this.transcript, this.cwd)
       if (!title || this.titlePinned) return
 
       // So `session/load` recovers this title from pi's state instead of the first message.
@@ -802,7 +809,8 @@ export class PiAcpSession {
 
     // Pi has no title for a fresh session; derive one from the prompt that started it.
     void this.publishSessionTitle(t.message)
-    this.userPrompts.push(t.message)
+    this.transcript.push({ role: 'user', text: t.message })
+    this.currentAssistantText = ''
 
     this.pendingTurn = { resolve: t.resolve, reject: t.reject }
 
@@ -859,6 +867,7 @@ export class PiAcpSession {
 
         // Stream assistant text.
         if (ame?.type === 'text_delta' && typeof ame.delta === 'string') {
+          this.currentAssistantText += ame.delta
           this.emit({
             sessionUpdate: 'agent_message_chunk',
             content: { type: 'text', text: ame.delta } satisfies ContentBlock
@@ -951,13 +960,15 @@ export class PiAcpSession {
       case 'message_end': {
         const message = (ev as { message?: { role?: string; stopReason?: string; errorMessage?: string } }).message
         if (message?.role === 'assistant') {
-          // Remember the error, replacing any earlier one; a later successful
-          // assistant message (e.g. after auto-retry) clears it so nothing is
-          // reported for a run that recovered.
+          // Remember the error; a later successful assistant message (e.g. after auto-retry) clears it.
           this.lastAssistantError =
             message.stopReason === 'error' && typeof message.errorMessage === 'string' && message.errorMessage
               ? message.errorMessage
               : null
+
+          const text = this.currentAssistantText.trim()
+          if (text) this.transcript.push({ role: 'assistant', text })
+          this.currentAssistantText = ''
         }
         break
       }

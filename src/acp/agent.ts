@@ -27,7 +27,7 @@ import { getAuthMethods } from './auth.js'
 import { SessionManager, type PiAcpSession, toToolCallLocations, toReplayDiffContent, toToolTitle } from './session.js'
 import { SessionStore } from './session-store.js'
 import { PiRpcProcess } from '../pi-rpc/process.js'
-import { listPiSessions, findPiSession } from './pi-sessions.js'
+import { listPiSessions, findPiSession, readRecentTranscript } from './pi-sessions.js'
 import { normalizePiAssistantText, normalizePiMessageText } from './translate/pi-messages.js'
 import { toolResultToText } from './translate/pi-tools.js'
 import {
@@ -216,7 +216,8 @@ export class PiAcpAgent implements ACPAgent {
         mcpServers: opts?.mcpServers ?? [],
         conn: this.conn,
         proc,
-        fileCommands
+        fileCommands,
+        initialTranscript: readRecentTranscript(stored.sessionFile)
       })
 
       this.lastSessionCwd = cwd

@@ -33,12 +33,15 @@ test('parseTitle: rejects empty output and a chatty model', () => {
 })
 
 test('toTitlePrompt: keeps both ends of a long transcript', () => {
-  const prompt = toTitlePrompt(['A'.repeat(1500), 'B'.repeat(1500)])
+  const prompt = toTitlePrompt([
+    { role: 'user', text: 'A'.repeat(3000) },
+    { role: 'assistant', text: 'B'.repeat(3000) }
+  ])
 
   assert.ok(prompt.includes('A'.repeat(200)), 'the opening ask survives')
-  assert.ok(prompt.includes('B'.repeat(200)), 'the latest ask survives')
+  assert.ok(prompt.includes('B'.repeat(200)), 'the latest reply survives')
   assert.ok(prompt.includes('[...]'), 'the middle is elided')
-  assert.ok(prompt.length < 2400, `stayed small, was ${prompt.length}`)
+  assert.ok(prompt.length < 4500, `stayed small, was ${prompt.length}`)
 })
 
 test('titleModel: unset, blank or whitespace means no titler', () => {

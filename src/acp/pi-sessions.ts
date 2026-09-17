@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, statSync, openSync, readSync, closeSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve, isAbsolute } from 'node:path'
+import type { TranscriptEntry } from './thread-title.js'
 
 export type PiSessionListItem = {
   sessionId: string
@@ -330,4 +331,46 @@ export function findPiSession(sessionId: string): PiSessionListItem | null {
 
 export function findPiSessionFile(sessionId: string): string | null {
   return findPiSession(sessionId)?.sessionFile ?? null
+}
+
+function messageText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter((c: any) => c?.type === 'text' && typeof c?.text === 'string')
+    .map((c: any) => c.text as string)
+    .join('\n')
+}
+
+/** Best-effort: rebuild the titler's transcript from a pi session file's tail, for `session/load`. */
+export function readRecentTranscript(path: string, tailBytes = DEFAULT_TAIL_BYTES): TranscriptEntry[] {
+  const entries: TranscriptEntry[] = []
+
+  let tail: string
+  try {
+    tail = readTail(path, tailBytes)
+  } catch {
+    return entries
+  }
+
+  for (const line0 of tail.split(/\r?\n/)) {
+    const line = line0.trim()
+    if (!line) continue
+
+    let obj: any
+    try {
+      obj = JSON.parse(line)
+    } catch {
+      continue
+    }
+
+    if (obj?.type !== 'message') continue
+    const role = obj?.message?.role
+    if (role !== 'user' && role !== 'assistant') continue
+
+    const text = messageText(obj.message.content).trim()
+    if (text) entries.push({ role, text })
+  }
+
+  return entries
 }
