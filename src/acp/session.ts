@@ -262,7 +262,20 @@ export function toToolTitle(toolName: string, args: unknown, cwd: string): strin
     return displayPath ? `Edit ${displayPath}` : 'Edit'
   }
 
+  if (lower === 'web_fetch') {
+    const url = (args as { url?: unknown } | null | undefined)?.url
+    return typeof url === 'string' ? `Fetch ${url}` : 'Fetch'
+  }
+
+  return humanizeToolName(toolName)
+}
+
+function humanizeToolName(toolName: string): string {
   return toolName
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map(word => word[0].toUpperCase() + word.slice(1))
+    .join(' ')
 }
 
 // Reconstruct structured ACP diff content for historic edit/write tool results.
@@ -1513,6 +1526,8 @@ function toToolKind(toolName: string): ToolKind {
       return 'edit'
     case 'bash':
       return 'execute'
+    case 'web_fetch':
+      return 'fetch'
     default:
       return 'other'
   }
