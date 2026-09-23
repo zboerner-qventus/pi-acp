@@ -57,6 +57,61 @@ export function getEnableSkillCommands(cwd: string): boolean {
   return true
 }
 
+// pi's RPC get_available_models ignores enabledModels scoping, so we replicate it here.
+export function getEnabledModelPatterns(cwd: string): string[] | undefined {
+  const merged = getMergedSettings(cwd)
+  const patterns = merged.enabledModels
+  if (!Array.isArray(patterns) || patterns.length === 0) return undefined
+  return patterns.filter((p): p is string => typeof p === 'string')
+}
+
+const THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+
+function stripThinkingSuffix(pattern: string): string {
+  const idx = pattern.lastIndexOf(':')
+  if (idx === -1) return pattern
+  return THINKING_LEVELS.has(pattern.slice(idx + 1).toLowerCase()) ? pattern.slice(0, idx) : pattern
+}
+
+// Minimal glob matcher covering *, ?, [...] case-insensitively, mirroring pi's minimatch usage.
+function globToRegExp(pattern: string): RegExp {
+  let re = ''
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i]
+    if (c === '*') re += '.*'
+    else if (c === '?') re += '.'
+    else if (c === '[') {
+      const end = pattern.indexOf(']', i + 1)
+      if (end === -1) {
+        re += '\\['
+        continue
+      }
+      re += pattern.slice(i, end + 1)
+      i = end
+    } else if ('.+^${}()|\\'.includes(c)) re += `\\${c}`
+    else re += c
+  }
+  return new RegExp(`^${re}$`, 'i')
+}
+
+export function matchesEnabledModelPattern(provider: string, id: string, pattern: string): boolean {
+  const fullId = `${provider}/${id}`
+  const isGlob = /[*?[]/.test(pattern)
+  const target = stripThinkingSuffix(pattern)
+  if (!isGlob) return target.toLowerCase() === fullId.toLowerCase() || target.toLowerCase() === id.toLowerCase()
+  const re = globToRegExp(target)
+  return re.test(fullId) || re.test(id)
+}
+
+export function filterModelsByEnabledPatterns<T extends { provider: string; id: string }>(
+  models: T[],
+  cwd: string
+): T[] {
+  const patterns = getEnabledModelPatterns(cwd)
+  if (!patterns) return models
+  return models.filter(m => patterns.some(p => matchesEnabledModelPattern(m.provider, m.id, p)))
+}
+
 /**
  * Mirror pi's quietStartup setting: if true, pi suppresses the verbose startup prelude.
  * We use it to decide whether to synthesize + emit our own "startup info" message.

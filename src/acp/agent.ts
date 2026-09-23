@@ -42,7 +42,7 @@ import {
 } from './translate/bash.js'
 import { promptToPiMessage } from './translate/prompt.js'
 import { loadSlashCommands, parseCommandArgs, toAvailableCommands } from './slash-commands.js'
-import { getAgentDir, getEnableSkillCommands, getQuietStartup } from './pi-settings.js'
+import { filterModelsByEnabledPatterns, getAgentDir, getEnableSkillCommands, getQuietStartup } from './pi-settings.js'
 import { toAvailableCommandsFromPiGetCommands } from './pi-commands.js'
 import { maybeAuthRequiredError } from './auth-required.js'
 import { isAbsolute } from 'node:path'
@@ -347,7 +347,7 @@ export class PiAcpAgent implements ACPAgent {
       )
     }
 
-    const { configOptions, models, modes } = await getSessionConfiguration(session.proc, {
+    const { configOptions, models, modes } = await getSessionConfiguration(session.proc, params.cwd, {
       state,
       availableModels
     })
@@ -1090,7 +1090,7 @@ export class PiAcpAgent implements ACPAgent {
       }
     }
 
-    const { configOptions, models, modes } = await getSessionConfiguration(proc)
+    const { configOptions, models, modes } = await getSessionConfiguration(proc, params.cwd)
 
     const response = {
       configOptions,
@@ -1172,7 +1172,7 @@ export class PiAcpAgent implements ACPAgent {
   async unstable_setSessionModel(params: { sessionId: string; modelId: string }): Promise<void> {
     const session = await this.restoreSession(params.sessionId)
     await setSessionModel(session.proc, params.modelId)
-    await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc)
+    await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc, session.cwd)
     await session.publishContextUsage()
   }
 
@@ -1195,7 +1195,7 @@ export class PiAcpAgent implements ACPAgent {
       }
     })
 
-    await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc)
+    await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc, session.cwd)
 
     return {}
   }
@@ -1230,7 +1230,7 @@ export class PiAcpAgent implements ACPAgent {
       throw RequestError.invalidParams(`Unknown config option: ${configId}`)
     }
 
-    const configOptions = await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc)
+    const configOptions = await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc, session.cwd)
     // A different model can mean a different context window; refresh it immediately.
     if (modelChanged) await session.publishContextUsage()
     return { configOptions }
@@ -1282,6 +1282,7 @@ async function getThinkingState(
 
 async function getSessionConfiguration(
   proc: PiRpcProcess,
+  cwd: string,
   pre?: { state?: any | null; availableModels?: any | null }
 ): Promise<{
   configOptions: SessionConfigOption[]
@@ -1298,7 +1299,10 @@ async function getSessionConfiguration(
     currentModeId: string
   }
 }> {
-  const [models, modes] = await Promise.all([getModelState(proc, pre), getThinkingState(proc, { state: pre?.state })])
+  const [models, modes] = await Promise.all([
+    getModelState(proc, cwd, pre),
+    getThinkingState(proc, { state: pre?.state })
+  ])
 
   return {
     configOptions: buildConfigOptions({ models, modes }),
@@ -1358,6 +1362,7 @@ function buildConfigOptions(state: {
 
 async function getModelState(
   proc: PiRpcProcess,
+  cwd: string,
   pre?: { state?: any | null; availableModels?: any | null }
 ): Promise<{
   availableModels: AdvertisedModel[]
@@ -1376,21 +1381,21 @@ async function getModelState(
       }
     })())
 
-  const models: any[] = Array.isArray(data?.models) ? data.models : []
-  availableModels = models
-    .map(m => {
-      const provider = String(m?.provider ?? '').trim()
-      const id = String(m?.id ?? '').trim()
-      if (!provider || !id) return null
-
-      const name = String(m?.name ?? id)
-      return {
-        modelId: `${provider}/${id}`,
-        name: `${provider}/${name}`,
-        description: null
-      } satisfies AdvertisedModel
-    })
-    .filter(Boolean) as AdvertisedModel[]
+  const rawModels: any[] = Array.isArray(data?.models) ? data.models : []
+  const models = filterModelsByEnabledPatterns(
+    rawModels
+      .map(m => ({ provider: String(m?.provider ?? '').trim(), id: String(m?.id ?? '').trim(), raw: m }))
+      .filter(m => m.provider && m.id),
+    cwd
+  )
+  availableModels = models.map(({ provider, id, raw: m }) => {
+    const name = String(m?.name ?? id)
+    return {
+      modelId: `${provider}/${id}`,
+      name: `${provider}/${name}`,
+      description: null
+    } satisfies AdvertisedModel
+  })
 
   // Ask pi what model is currently active.
   let currentModelId: string | null = null
@@ -1426,9 +1431,10 @@ async function getModelState(
 async function emitConfigOptionsUpdate(
   conn: AgentSideConnection,
   sessionId: string,
-  proc: PiRpcProcess
+  proc: PiRpcProcess,
+  cwd: string
 ): Promise<SessionConfigOption[]> {
-  const { configOptions } = await getSessionConfiguration(proc)
+  const { configOptions } = await getSessionConfiguration(proc, cwd)
 
   await conn.sessionUpdate({
     sessionId,
