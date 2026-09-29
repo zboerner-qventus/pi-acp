@@ -51,7 +51,6 @@ import type { AvailableCommand } from '@agentclientprotocol/sdk'
 import { join, dirname, basename } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
-type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 type AdvertisedModel = {
   modelId: string
   name: string
@@ -347,10 +346,15 @@ export class PiAcpAgent implements ACPAgent {
       )
     }
 
-    const { configOptions, models, modes } = await getSessionConfiguration(session.proc, params.cwd, {
-      state,
-      availableModels
-    })
+    let configuration: Awaited<ReturnType<typeof getSessionConfiguration>>
+    try {
+      if (stateErr) throw stateErr
+      configuration = await getSessionConfiguration(session.proc, params.cwd, { state, availableModels })
+    } catch (err) {
+      this.cleanupFailedNewSession(session.sessionId, state)
+      throw maybeAuthRequiredError(err) ?? RequestError.internalError({}, String((err as Error)?.message ?? err))
+    }
+    const { configOptions, models, modes } = configuration
 
     const quietStartup = getQuietStartup(params.cwd)
     const updateNotice = buildUpdateNotice()
@@ -958,6 +962,14 @@ export class PiAcpAgent implements ACPAgent {
       mcpServers: params.mcpServers
     })
     const proc = session.proc
+    let configuration: Awaited<ReturnType<typeof getSessionConfiguration>>
+    try {
+      configuration = await getSessionConfiguration(proc, params.cwd)
+    } catch (err) {
+      this.sessions.close(session.sessionId)
+      throw err
+    }
+    const { configOptions, models, modes } = configuration
     const fileCommands = loadSlashCommands(params.cwd)
 
     // Policy: within a single ACP connection (one Zed window), keep only one live pi subprocess.
@@ -1090,8 +1102,6 @@ export class PiAcpAgent implements ACPAgent {
       }
     }
 
-    const { configOptions, models, modes } = await getSessionConfiguration(proc, params.cwd)
-
     const response = {
       configOptions,
       models,
@@ -1179,21 +1189,12 @@ export class PiAcpAgent implements ACPAgent {
   async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
     const session = await this.restoreSession(params.sessionId)
 
-    const mode = String(params.modeId)
-    if (!isThinkingLevel(mode)) {
-      throw RequestError.invalidParams(`Unknown modeId: ${mode}`)
+    const mode = params.modeId
+    if (typeof mode !== 'string' || mode.length === 0) {
+      throw RequestError.invalidParams('Expected nonempty string modeId')
     }
 
     await session.proc.setThinkingLevel(mode)
-
-    // Let the client know the current mode changed (keeps the dropdown in sync).
-    void this.conn.sessionUpdate({
-      sessionId: session.sessionId,
-      update: {
-        sessionUpdate: 'current_mode_update',
-        currentModeId: mode
-      }
-    })
 
     await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc, session.cwd)
 
@@ -1213,19 +1214,11 @@ export class PiAcpAgent implements ACPAgent {
       await setSessionModel(session.proc, params.value)
       modelChanged = true
     } else if (configId === THOUGHT_LEVEL_CONFIG_ID) {
-      if (!isThinkingLevel(params.value)) {
-        throw RequestError.invalidParams(`Unknown thinking level: ${params.value}`)
+      if (params.value.length === 0) {
+        throw RequestError.invalidParams('Expected nonempty thinking level')
       }
 
       await session.proc.setThinkingLevel(params.value)
-
-      void this.conn.sessionUpdate({
-        sessionId: session.sessionId,
-        update: {
-          sessionUpdate: 'current_mode_update',
-          currentModeId: params.value
-        }
-      })
     } else {
       throw RequestError.invalidParams(`Unknown config option: ${configId}`)
     }
@@ -1235,10 +1228,6 @@ export class PiAcpAgent implements ACPAgent {
     if (modelChanged) await session.publishContextUsage()
     return { configOptions }
   }
-}
-
-function isThinkingLevel(x: string): x is ThinkingLevel {
-  return x === 'off' || x === 'minimal' || x === 'low' || x === 'medium' || x === 'high' || x === 'xhigh'
 }
 
 async function getThinkingState(
@@ -1252,23 +1241,13 @@ async function getThinkingState(
   }>
   currentModeId: string
 }> {
-  // Ask pi for current thinking level.
-  let current: ThinkingLevel = 'medium'
-
-  const state =
-    pre?.state ??
-    (await (async () => {
-      try {
-        return (await proc.getState()) as any
-      } catch {
-        return null
-      }
-    })())
-
-  const tl = typeof state?.thinkingLevel === 'string' ? state.thinkingLevel : null
-  if (tl && isThinkingLevel(tl)) current = tl
-
-  const available: ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh']
+  const state = pre?.state ?? (await proc.getState())
+  const available = await proc.getAvailableThinkingLevels()
+  const current: unknown =
+    state && typeof state === 'object' && 'thinkingLevel' in state ? state.thinkingLevel : undefined
+  if (typeof current !== 'string' || current.length === 0 || !available.includes(current)) {
+    throw new Error('pi returned a thinking level absent from available levels')
+  }
 
   return {
     currentModeId: current,
@@ -1299,9 +1278,10 @@ async function getSessionConfiguration(
     currentModeId: string
   }
 }> {
+  const state = pre?.state ?? (await proc.getState())
   const [models, modes] = await Promise.all([
-    getModelState(proc, cwd, pre),
-    getThinkingState(proc, { state: pre?.state })
+    getModelState(proc, cwd, { ...pre, state }),
+    getThinkingState(proc, { state })
   ])
 
   return {
@@ -1434,8 +1414,12 @@ async function emitConfigOptionsUpdate(
   proc: PiRpcProcess,
   cwd: string
 ): Promise<SessionConfigOption[]> {
-  const { configOptions } = await getSessionConfiguration(proc, cwd)
+  const { configOptions, modes } = await getSessionConfiguration(proc, cwd)
 
+  await conn.sessionUpdate({
+    sessionId,
+    update: { sessionUpdate: 'current_mode_update', currentModeId: modes.currentModeId }
+  })
   await conn.sessionUpdate({
     sessionId,
     update: {

@@ -22,6 +22,8 @@ class FakeSessions {
     }
     return this.session
   }
+
+  close(_sessionId: string) {}
 }
 
 /** Let the `setTimeout(..., 0)` continuations scheduled after session/new or session/load run. */
@@ -140,7 +142,7 @@ test('PiAcpAgent: switching the model config option refreshes context usage', as
 
   assert.deepEqual(
     conn.updates.map(u => u.update.sessionUpdate),
-    ['config_option_update', 'usage_update']
+    ['current_mode_update', 'config_option_update', 'usage_update']
   )
   assert.deepEqual(conn.updates.at(-1), {
     sessionId: 's1',
@@ -177,7 +179,7 @@ test('PiAcpAgent: unstable_setSessionModel refreshes context usage', async () =>
   assert.equal(proc.getSessionStatsCount, 1)
   assert.deepEqual(
     conn.updates.map(u => u.update.sessionUpdate),
-    ['config_option_update', 'usage_update']
+    ['current_mode_update', 'config_option_update', 'usage_update']
   )
   assert.deepEqual(conn.updates.at(-1), {
     sessionId: 's1',

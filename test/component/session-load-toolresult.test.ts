@@ -29,6 +29,7 @@ test('PiAcpAgent: loadSession replays toolResult as tool_call + tool_call_update
           }
         ]
       }),
+      getAvailableThinkingLevels: async () => ['medium'],
       getAvailableModels: async () => ({ models: [] }),
       getState: async () => ({ thinkingLevel: 'medium' })
     } as any
@@ -94,6 +95,7 @@ test('PiAcpAgent: loadSession replays read toolResult with locations and plain t
           }
         ]
       }),
+      getAvailableThinkingLevels: async () => ['medium'],
       getAvailableModels: async () => ({ models: [] }),
       getState: async () => ({ thinkingLevel: 'medium' })
     } as any
@@ -157,6 +159,7 @@ test('PiAcpAgent: loadSession replays read toolResult with locations and descrip
           }
         ]
       }),
+      getAvailableThinkingLevels: async () => ['medium'],
       getAvailableModels: async () => ({ models: [] }),
       getState: async () => ({ thinkingLevel: 'medium' })
     } as any
@@ -223,6 +226,7 @@ test('PiAcpAgent: loadSession recovers tool args from the assistant toolCall blo
           }
         ]
       }),
+      getAvailableThinkingLevels: async () => ['medium'],
       getAvailableModels: async () => ({ models: [] }),
       getState: async () => ({ thinkingLevel: 'medium' })
     } as any
@@ -284,6 +288,7 @@ test('PiAcpAgent: loadSession replays edit toolResult as a structured diff from 
           }
         ]
       }),
+      getAvailableThinkingLevels: async () => ['medium'],
       getAvailableModels: async () => ({ models: [] }),
       getState: async () => ({ thinkingLevel: 'medium' })
     } as any
@@ -335,6 +340,7 @@ test('PiAcpAgent: loadSession replays write toolResult as a new-file diff from a
           }
         ]
       }),
+      getAvailableThinkingLevels: async () => ['medium'],
       getAvailableModels: async () => ({ models: [] }),
       getState: async () => ({ thinkingLevel: 'medium' })
     } as any

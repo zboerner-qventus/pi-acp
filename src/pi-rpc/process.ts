@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import * as readline from 'node:readline'
+import crossSpawn from 'cross-spawn'
 import { getPiCommand, shouldUseShellForPiCommand } from './command.js'
 
 export class PiRpcSpawnError extends Error {
@@ -35,7 +36,8 @@ type PiRpcCommand =
   | { type: 'get_available_models'; id?: string }
   | { type: 'set_model'; id?: string; provider: string; modelId: string }
   // Thinking
-  | { type: 'set_thinking_level'; id?: string; level: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' }
+  | { type: 'get_available_thinking_levels'; id?: string }
+  | { type: 'set_thinking_level'; id?: string; level: string }
   // Modes
   | { type: 'set_follow_up_mode'; id?: string; mode: 'all' | 'one-at-a-time' }
   | { type: 'set_steering_mode'; id?: string; mode: 'all' | 'one-at-a-time' }
@@ -163,12 +165,13 @@ export class PiRpcProcess {
     const args = ['--mode', 'rpc', '--no-themes']
     if (params.sessionPath) args.push('--session', params.sessionPath)
 
-    const child = spawn(cmd, args, {
+    // Windows cmd launchers need shell escaping; direct executables use native argv.
+    const start = shouldUseShellForPiCommand(cmd) ? crossSpawn : spawn
+    const child = start(cmd, args, {
       cwd: params.cwd,
       stdio: 'pipe',
-      env: process.env,
-      shell: shouldUseShellForPiCommand(cmd)
-    })
+      env: process.env
+    }) as ChildProcessWithoutNullStreams
 
     // Ensure spawn failures (e.g. ENOENT when pi isn't installed) are surfaced as a
     // deterministic error instead of later EPIPE/internal-error noise.
@@ -284,7 +287,23 @@ export class PiRpcProcess {
     return res.data
   }
 
-  async setThinkingLevel(level: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'): Promise<void> {
+  async getAvailableThinkingLevels(): Promise<string[]> {
+    const res = await this.request({ type: 'get_available_thinking_levels' })
+    if (!res.success)
+      throw new Error(`pi get_available_thinking_levels failed: ${res.error ?? JSON.stringify(res.data)}`)
+    const data = res.data
+    const levels = data && typeof data === 'object' && 'levels' in data ? data.levels : undefined
+    if (
+      !Array.isArray(levels) ||
+      levels.length === 0 ||
+      !levels.every(level => typeof level === 'string' && level.length > 0)
+    ) {
+      throw new Error('pi get_available_thinking_levels returned invalid levels')
+    }
+    return levels
+  }
+
+  async setThinkingLevel(level: string): Promise<void> {
     const res = await this.request({ type: 'set_thinking_level', level })
     if (!res.success) throw new Error(`pi set_thinking_level failed: ${res.error ?? JSON.stringify(res.data)}`)
   }
