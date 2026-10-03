@@ -204,6 +204,70 @@ test('PiAcpSession: handles extension select via ACP permission request', async 
   assert.deepEqual(proc.extensionUiResponses, [{ id: 'ui-1', value: 'Beta' }])
 })
 
+test('PiAcpSession: routes ask_user_question select through elicitation instead of guessed permission kinds', async () => {
+  const conn = new FakeAgentSideConnection()
+  conn.elicitationResponse = { action: 'accept', content: { value: 'No, use SQLite' } }
+  const proc = new FakePiRpcProcess()
+
+  new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  proc.emit({ type: 'tool_execution_start', toolCallId: 'tc-1', toolName: 'ask_user_question', args: {} })
+  proc.emit({
+    type: 'extension_ui_request',
+    id: 'ui-6',
+    method: 'select',
+    title: 'Pick a database',
+    options: ['Yes, use Postgres', 'No, use SQLite']
+  })
+
+  await new Promise(r => setTimeout(r, 0))
+
+  assert.equal(conn.permissionRequests.length, 0)
+  assert.equal(conn.elicitationRequests.length, 1)
+  assert.deepEqual((conn.elicitationRequests[0] as any).requestedSchema.properties.value.oneOf, [
+    { const: 'Yes, use Postgres', title: 'Yes, use Postgres' },
+    { const: 'No, use SQLite', title: 'No, use SQLite' }
+  ])
+  assert.deepEqual(proc.extensionUiResponses, [{ id: 'ui-6', value: 'No, use SQLite' }])
+})
+
+test('PiAcpSession: falls back to permission request when the client rejects the elicitation', async () => {
+  const conn = new FakeAgentSideConnection()
+  conn.elicitationError = new Error('unsupported')
+  conn.nextPermissionResponse = { outcome: { outcome: 'selected', optionId: 'choice-1' } }
+  const proc = new FakePiRpcProcess()
+
+  new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  proc.emit({ type: 'tool_execution_start', toolCallId: 'tc-2', toolName: 'ask_user_question', args: {} })
+  proc.emit({
+    type: 'extension_ui_request',
+    id: 'ui-7',
+    method: 'select',
+    title: 'Pick a database',
+    options: ['Yes, use Postgres', 'No, use SQLite']
+  })
+
+  await new Promise(r => setTimeout(r, 0))
+
+  assert.equal(conn.permissionRequests.length, 1)
+  assert.deepEqual(proc.extensionUiResponses, [{ id: 'ui-7', value: 'No, use SQLite' }])
+})
+
 test('PiAcpSession: handles extension confirm via ACP permission request', async () => {
   const conn = new FakeAgentSideConnection()
   conn.nextPermissionResponse = { outcome: { outcome: 'selected', optionId: 'no' } }

@@ -465,7 +465,7 @@ export class PiAcpSession {
 
   // The tool call pi is currently executing, if any. Permission gates fire while the tool
   // is held, so prompts can be rendered on that tool call instead of a standalone card.
-  private activeToolCall: { toolCallId: string; title: string; isBash: boolean } | null = null
+  private activeToolCall: { toolCallId: string; title: string; isBash: boolean; toolName: string } | null = null
 
   // A title has been sent for this session; later prompts must not rename the thread.
   private titleEmitted = false
@@ -983,7 +983,7 @@ export class PiAcpSession {
           const locations = toToolCallLocations(args, this.cwd)
           const existingStatus = this.currentToolCalls.get(toolCallId)
           this.currentToolCalls.set(toolCallId, 'in_progress')
-          this.activeToolCall = { toolCallId, title: toToolTitle(toolName, args, this.cwd), isBash: true }
+          this.activeToolCall = { toolCallId, title: toToolTitle(toolName, args, this.cwd), isBash: true, toolName }
           this.emitBashToolCall({
             sessionUpdate: existingStatus ? 'tool_call_update' : 'tool_call',
             toolCallId,
@@ -1024,7 +1024,7 @@ export class PiAcpSession {
         const locations = toToolCallLocations(args, this.cwd, line)
 
         const title = toToolTitle(toolName, args, this.cwd)
-        this.activeToolCall = { toolCallId, title, isBash: false }
+        this.activeToolCall = { toolCallId, title, isBash: false, toolName }
 
         // If we already surfaced the tool call while the model streamed it, just transition.
         if (!this.currentToolCalls.has(toolCallId)) {
@@ -1361,6 +1361,29 @@ export class PiAcpSession {
     return offered.heading === splitPromptText(prompt).heading ? offered.options : null
   }
 
+  // Same ui.select request as a permission gate, but ask_user_question is a real question.
+  private async handleQuestionSelectAsElicitation(prompt: string, options: string[], id: string): Promise<boolean> {
+    try {
+      const result = await this.conn.unstable_createElicitation({
+        sessionId: this.sessionId,
+        message: prompt,
+        mode: 'form',
+        requestedSchema: {
+          type: 'object',
+          properties: {
+            value: { type: 'string', title: 'Answer', oneOf: options.map(option => ({ const: option, title: option })) }
+          },
+          required: ['value']
+        }
+      })
+      const value = result?.action === 'accept' ? result.content?.value : undefined
+      await this.proc.sendExtensionUiResponse(typeof value === 'string' ? { id, value } : { id, cancelled: true })
+      return true
+    } catch {
+      return false
+    }
+  }
+
   private async handleExtensionSelect(ev: PiRpcEvent, id: string): Promise<void> {
     const rawOptions = ev.options
     const options = Array.isArray(rawOptions) ? rawOptions.map(option => String(option)) : []
@@ -1369,7 +1392,15 @@ export class PiAcpSession {
       return
     }
 
-    this.lastOfferedOptions = { heading: splitPromptText(stringProp(ev, 'title') ?? '').heading, options }
+    const prompt = stringProp(ev, 'title') ?? ''
+    this.lastOfferedOptions = { heading: splitPromptText(prompt).heading, options }
+
+    if (
+      this.activeToolCall?.toolName === 'ask_user_question' &&
+      (await this.handleQuestionSelectAsElicitation(prompt, options, id))
+    ) {
+      return
+    }
 
     const overflows = options.some(option => option.length > OPTION_LABEL_MAX)
     const permissionOptions: PermissionOption[] = options.map((name, index) => ({
@@ -1447,7 +1478,7 @@ export class PiAcpSession {
   }
 
   private permissionPromptOnToolCall(
-    active: { toolCallId: string; title: string; isBash: boolean },
+    active: { toolCallId: string; title: string; isBash: boolean; toolName: string },
     ev: PiRpcEvent,
     extraContent: ToolCallContent[] = []
   ) {
