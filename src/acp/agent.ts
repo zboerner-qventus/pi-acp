@@ -27,7 +27,7 @@ import { getAuthMethods } from './auth.js'
 import { SessionManager, type PiAcpSession, toToolCallLocations, toReplayDiffContent, toToolTitle } from './session.js'
 import { SessionStore } from './session-store.js'
 import { PiRpcProcess } from '../pi-rpc/process.js'
-import { listPiSessions, findPiSession, readRecentTranscript } from './pi-sessions.js'
+import { listPiSessions, findPiSession, readRecentTranscript, readPiSessionTitle } from './pi-sessions.js'
 import { normalizePiAssistantText, normalizePiMessageText } from './translate/pi-messages.js'
 import { toolResultToText } from './translate/pi-tools.js'
 import {
@@ -40,7 +40,7 @@ import {
   bashTerminalOutputMeta,
   isBashTool
 } from './translate/bash.js'
-import { promptToPiMessage } from './translate/prompt.js'
+import { promptToPiMessage, promptToSessionTitle } from './translate/prompt.js'
 import { loadSlashCommands, parseCommandArgs, toAvailableCommands } from './slash-commands.js'
 import { filterModelsByEnabledPatterns, getAgentDir, getEnableSkillCommands, getQuietStartup } from './pi-settings.js'
 import { toAvailableCommandsFromPiGetCommands } from './pi-commands.js'
@@ -221,6 +221,9 @@ export class PiAcpAgent implements ACPAgent {
 
       this.lastSessionCwd = cwd
       this.store.upsert({ sessionId, cwd, sessionFile: stored.sessionFile })
+
+      const title = readPiSessionTitle(stored.sessionFile)
+      if (title) await session.publishTitle(title, null)
 
       return session
     })()
@@ -405,9 +408,7 @@ export class PiAcpAgent implements ACPAgent {
         // Publish real context usage now that the client knows the sessionId (clients ignore
         // notifications for unknown sessions), so the window size is correct before the first prompt.
         await session.publishContextUsage()
-        // Only emits when pi already has a name (e.g. a resumed session file); an unnamed
-        // session gets its title from the first prompt instead.
-        await session.publishSessionTitle()
+        // Named or first-prompt titles are published by the session itself (see maybeAutoTitle).
 
         try {
           const pi = (await session.proc.getCommands()) as any
@@ -536,7 +537,7 @@ export class PiAcpAgent implements ACPAgent {
         }
 
         try {
-          await session.proc.setSessionName(name)
+          await session.setSessionName(name)
         } catch (e: any) {
           const msg = String(e?.message ?? e)
           const hint = /set_session_name/i.test(msg)
@@ -552,15 +553,6 @@ export class PiAcpAgent implements ACPAgent {
           })
           return { stopReason: 'end_turn' }
         }
-
-        await this.conn.sessionUpdate({
-          sessionId: session.sessionId,
-          update: {
-            sessionUpdate: 'session_info_update',
-            title: name,
-            updatedAt: new Date().toISOString()
-          }
-        })
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
@@ -894,7 +886,7 @@ export class PiAcpAgent implements ACPAgent {
       }
     }
 
-    const result = await session.prompt(message, images)
+    const result = await session.prompt(message, images, promptToSessionTitle(params.prompt) ?? undefined)
 
     // ACP StopReason does not include "error"; if pi fails we map to end_turn for now,
     // unless we know this was a cancellation.
@@ -991,14 +983,12 @@ export class PiAcpAgent implements ACPAgent {
     // matching toolResult message. Index them by tool call id so historic
     // tool results can recover their inputs for titles, locations, and rawInput.
     const toolCallArgs = new Map<string, unknown>()
-    let firstUserText: string | undefined
     for (const m of messages) {
       const role = String(m?.role ?? '')
 
       if (role === 'user') {
         const text = normalizePiMessageText(m?.content)
         if (text) {
-          firstUserText ??= text
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
@@ -1117,9 +1107,6 @@ export class PiAcpAgent implements ACPAgent {
     setTimeout(() => {
       void (async () => {
         await session.publishContextUsage()
-        // Pin the resumed thread's title to its first message (or pi's own name) so a later
-        // prompt in this session cannot rename it.
-        await session.publishSessionTitle(firstUserText)
 
         try {
           const pi = (await proc.getCommands()) as any

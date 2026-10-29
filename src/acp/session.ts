@@ -42,6 +42,7 @@ type SessionCreateParams = {
 export type StopReason = 'end_turn' | 'cancelled' | 'error'
 
 type PendingTurn = {
+  title?: string
   resolve: (reason: StopReason) => void
   reject: (err: unknown) => void
 }
@@ -49,6 +50,7 @@ type PendingTurn = {
 type QueuedTurn = {
   message: string
   images: unknown[]
+  title?: string
   resolve: (reason: StopReason) => void
   reject: (err: unknown) => void
 }
@@ -81,17 +83,6 @@ function toPermissionOptionKind(option: string): PermissionOption['kind'] {
 
   if (rejects) return persists ? 'reject_always' : 'reject_once'
   return persists ? 'allow_always' : 'allow_once'
-}
-
-/**
- * Pi never names a session on its own, so an ACP client has nothing to show but its
- * placeholder. Derive a title from the first prompt, mirroring `listPiSessions`' fallback
- * (first user message, 80 chars) so a live thread and its history entry agree.
- */
-function toSessionTitle(text: string): string | null {
-  const line = text.replace(/\s+/g, ' ').trim()
-  if (!line) return null
-  return line.length > 80 ? `${line.slice(0, 79)}…` : line
 }
 
 /**
@@ -380,7 +371,8 @@ export class SessionManager {
       mcpServers: params.mcpServers,
       proc,
       conn: params.conn,
-      fileCommands: params.fileCommands ?? []
+      fileCommands: params.fileCommands ?? [],
+      autoTitle: true
     })
 
     this.sessions.set(sessionId, session)
@@ -411,7 +403,8 @@ export class SessionManager {
       proc: params.proc,
       conn: params.conn,
       fileCommands: params.fileCommands ?? [],
-      initialTranscript: params.initialTranscript
+      initialTranscript: params.initialTranscript,
+      autoTitle: false
     })
 
     this.sessions.set(sessionId, session)
@@ -426,6 +419,9 @@ export class PiAcpSession {
 
   private startupInfo: string | null = null
   private startupInfoSent = false
+  private initialTitlePending: boolean
+  private lastPublishedTitle: string | null | undefined
+  private titleUpdateQueue: Promise<void> = Promise.resolve()
 
   readonly proc: PiRpcProcess
   private readonly conn: AgentSideConnection
@@ -467,9 +463,6 @@ export class PiAcpSession {
   // is held, so prompts can be rendered on that tool call instead of a standalone card.
   private activeToolCall: { toolCallId: string; title: string; isBash: boolean; toolName: string } | null = null
 
-  // A title has been sent for this session; later prompts must not rename the thread.
-  private titleEmitted = false
-
   // An explicit name (`/name`, `set_session_name`) outranks any generated title, forever.
   private titlePinned = false
 
@@ -497,6 +490,7 @@ export class PiAcpSession {
     conn: AgentSideConnection
     fileCommands?: FileSlashCommand[]
     initialTranscript?: TranscriptEntry[]
+    autoTitle?: boolean
   }) {
     this.sessionId = opts.sessionId
     this.cwd = opts.cwd
@@ -505,6 +499,7 @@ export class PiAcpSession {
     this.conn = opts.conn
     this.fileCommands = opts.fileCommands ?? []
     this.transcript = opts.initialTranscript ?? []
+    this.initialTitlePending = opts.autoTitle ?? false
 
     this.proc.onEvent(ev => this.handlePiEvent(ev))
   }
@@ -529,12 +524,12 @@ export class PiAcpSession {
     })
   }
 
-  async prompt(message: string, images: unknown[] = []): Promise<StopReason> {
+  async prompt(message: string, images: unknown[] = [], title?: string): Promise<StopReason> {
     // pi RPC mode disables slash command expansion, so we do it here.
     const expandedMessage = expandSlashCommand(message, this.fileCommands)
 
     const turnPromise = new Promise<StopReason>((resolve, reject) => {
-      const queued: QueuedTurn = { message: expandedMessage, images, resolve, reject }
+      const queued: QueuedTurn = { message: expandedMessage, images, title, resolve, reject }
 
       // If a turn is already running, enqueue.
       if (this.pendingTurn) {
@@ -593,34 +588,6 @@ export class PiAcpSession {
     return this.cancelRequested
   }
 
-  /**
-   * Best-effort: give the client a thread title. Pi only names sessions when asked
-   * (`/name`, `set_session_name`, extensions), so fall back to the first prompt --
-   * without this the client is never told anything and keeps its placeholder title.
-   */
-  async publishSessionTitle(fallbackText?: string): Promise<void> {
-    if (this.titleEmitted) return
-
-    let name: string | null = null
-    try {
-      const state = (await this.proc.getState()) as { sessionName?: unknown } | null
-      if (typeof state?.sessionName === 'string' && state.sessionName.trim()) name = state.sessionName.trim()
-    } catch {
-      // A missing state response is not worth failing a turn over.
-    }
-
-    const title = name ?? (fallbackText ? toSessionTitle(fallbackText) : null)
-    if (!title) return
-
-    if (name) this.titlePinned = true
-    this.titleEmitted = true
-    this.emit({
-      sessionUpdate: 'session_info_update',
-      title,
-      updatedAt: new Date().toISOString()
-    })
-  }
-
   /** Ask a cheap model for a title that reflects the whole thread. No-op unless configured. */
   private async regenerateTitle(): Promise<void> {
     if (this.titlePinned || this.generatingTitle || !titleModel() || !this.transcript.length) return
@@ -638,16 +605,62 @@ export class PiAcpSession {
         this.settingGeneratedTitle = false
       }
 
-      this.titleEmitted = true
-      this.emit({
-        sessionUpdate: 'session_info_update',
-        title,
-        updatedAt: new Date().toISOString()
-      })
+      this.publishTitle(title)
     } catch {
       // A title is cosmetic; never let it disturb the session.
     } finally {
       this.generatingTitle = false
+    }
+  }
+
+  async setSessionName(name: string): Promise<void> {
+    return this.enqueueTitleUpdate(async () => {
+      await this.proc.setSessionName(name)
+      this.publishTitle(name)
+    })
+  }
+
+  private enqueueTitleUpdate(update: () => Promise<void>): Promise<void> {
+    const result = this.titleUpdateQueue.then(update)
+    this.titleUpdateQueue = result.catch(() => {})
+    return result
+  }
+
+  publishTitle(title: string | null, updatedAt: string | null = new Date().toISOString()): Promise<void> {
+    if (this.lastPublishedTitle === title) return this.lastEmit
+    this.lastPublishedTitle = title
+    this.emit({
+      sessionUpdate: 'session_info_update',
+      title,
+      ...(updatedAt ? { updatedAt } : {})
+    })
+    return this.lastEmit
+  }
+
+  private async maybeAutoTitle(title?: string): Promise<void> {
+    if (!this.initialTitlePending || !title) return
+    this.initialTitlePending = false
+
+    try {
+      await this.enqueueTitleUpdate(async () => {
+        const state = (await this.proc.getState()) as { sessionName?: unknown } | null
+        const currentTitle = typeof state?.sessionName === 'string' ? state.sessionName.trim() : ''
+        if (currentTitle) {
+          this.publishTitle(currentTitle)
+          return
+        }
+        if (this.lastPublishedTitle) return
+
+        this.settingGeneratedTitle = true
+        try {
+          await this.proc.setSessionName(title)
+        } finally {
+          this.settingGeneratedTitle = false
+        }
+        this.publishTitle(title)
+      })
+    } catch {
+      // Auto-titling is best-effort and must not fail the completed prompt.
     }
   }
 
@@ -807,12 +820,11 @@ export class PiAcpSession {
     this.inAgentLoop = false
     this.lastAssistantError = null
 
-    // Pi has no title for a fresh session; derive one from the prompt that started it.
-    void this.publishSessionTitle(t.message)
     this.transcript.push({ role: 'user', text: t.message })
     this.currentAssistantText = ''
 
-    this.pendingTurn = { resolve: t.resolve, reject: t.reject }
+    this.pendingTurn = { title: t.title, resolve: t.resolve, reject: t.reject }
+    void this.maybeAutoTitle(t.title)
 
     // Publish queue depth (0 because we're starting the turn now).
     this.emit({
@@ -862,6 +874,13 @@ export class PiAcpSession {
     const type = String((ev as any).type ?? '')
 
     switch (type) {
+      case 'session_info_changed': {
+        const name = (ev as { name?: unknown }).name
+        if (typeof name === 'string' && name.trim() && !this.settingGeneratedTitle) this.titlePinned = true
+        if (typeof name === 'string' || name === undefined) this.publishTitle(name ?? null)
+        break
+      }
+
       case 'message_update': {
         const ame = (ev as any).assistantMessageEvent
 
@@ -1218,27 +1237,6 @@ export class PiAcpSession {
         // One low-level run ended. Pi may still retry, compact, or process a queued
         // continuation, so keep the ACP turn open until `agent_settled`.
         this.inAgentLoop = false
-        break
-      }
-
-      case 'session_info_changed': {
-        // The agent renamed the session in-process -- e.g. an extension tool
-        // such as `set_session_name` calling `pi.setSessionName()`, or the
-        // built-in `set_session_name` RPC command. Pi emits
-        // `session_info_changed` on the RPC event stream; forward it to the
-        // ACP client as a `session_info_update` carrying the new `title` so
-        // attached UIs (e.g. agent-shell) can refresh the session title /
-        // buffer name live. Mirrors the `/name` slash-command path in agent.ts.
-        const name = typeof (ev as any).name === 'string' ? (ev as any).name.trim() : ''
-        if (name && !this.settingGeneratedTitle) {
-          this.titleEmitted = true
-          this.titlePinned = true
-          this.emit({
-            sessionUpdate: 'session_info_update',
-            title: name,
-            updatedAt: new Date().toISOString()
-          })
-        }
         break
       }
 
