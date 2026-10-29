@@ -69,3 +69,32 @@ test('PiAcpAgent: /name sets session display name adapter-side', async () => {
   const last = conn.updates.at(-1)
   assert.match((last as any).update.content.text, /Session name set: My Session/)
 })
+
+test('PiAcpAgent: _session/steering steers a running turn, else follows the idle contract', async () => {
+  const proc = new FakePiRpcProcess()
+  let running = true
+  const agent = new PiAcpAgent(asAgentConn(new FakeAgentSideConnection()))
+  ;(agent as any).sessions = new FakeSessions({
+    sessionId: 's1',
+    proc,
+    fileCommands: [],
+    isTurnRunning: () => running
+  }) as any
+  const prompt = [{ type: 'text', text: '@bob look at this' }]
+
+  assert.deepEqual((await agent.initialize({ protocolVersion: 1 } as any))._meta, { steering: { supported: true } })
+
+  assert.deepEqual(await agent.extMethod('_session/steering', { sessionId: 's1', prompt }), { outcome: 'injected' })
+  assert.deepEqual(proc.steers, ['@bob look at this'])
+
+  running = false
+  assert.deepEqual(
+    await agent.extMethod('_session/steering', {
+      sessionId: 's1',
+      prompt,
+      _meta: { steering: { idleBehavior: 'promptRequired' } }
+    }),
+    { outcome: 'promptRequired', reason: 'noRunningTurn' }
+  )
+  assert.equal(proc.steers.length, 1)
+})

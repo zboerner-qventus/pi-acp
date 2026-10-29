@@ -584,6 +584,10 @@ export class PiAcpSession {
     await this.proc.abort()
   }
 
+  isTurnRunning(): boolean {
+    return this.pendingTurn !== null
+  }
+
   wasCancelRequested(): boolean {
     return this.cancelRequested
   }

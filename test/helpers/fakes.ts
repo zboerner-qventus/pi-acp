@@ -38,6 +38,7 @@ export class FakePiRpcProcess {
 
   // spies
   readonly prompts: Array<{ message: string; attachments: unknown[] }> = []
+  readonly steers: string[] = []
   readonly extensionUiResponses: unknown[] = []
   abortCount = 0
   getSessionStatsCount = 0
@@ -70,6 +71,10 @@ export class FakePiRpcProcess {
 
   async abort(): Promise<void> {
     this.abortCount += 1
+  }
+
+  async steer(message: string): Promise<void> {
+    this.steers.push(message)
   }
 
   async sendExtensionUiResponse(response: unknown): Promise<void> {

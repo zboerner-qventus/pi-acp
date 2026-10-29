@@ -268,8 +268,36 @@ export class PiAcpAgent implements ACPAgent {
           list: {},
           delete: {}
         }
-      }
+      },
+      _meta: { steering: { supported: true } }
     }
+  }
+
+  async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (method !== '_session/steering') throw RequestError.methodNotFound(method)
+
+    const { sessionId, prompt, _meta } = params as Partial<PromptRequest> & { _meta?: any }
+    if (typeof sessionId !== 'string' || !sessionId) {
+      throw RequestError.invalidParams(undefined, 'steer params require a non-empty sessionId')
+    }
+    if (!Array.isArray(prompt) || prompt.length === 0) {
+      throw RequestError.invalidParams(undefined, 'steer params require a non-empty prompt array')
+    }
+    const idleBehavior = _meta?.steering?.idleBehavior
+    if (idleBehavior !== undefined && idleBehavior !== 'promptRequired') {
+      throw RequestError.invalidParams(undefined, 'unsupported steering idleBehavior')
+    }
+
+    const session = await this.restoreSession(sessionId)
+    if (session.isTurnRunning()) {
+      const { message, images } = promptToPiMessage(prompt)
+      await session.proc.steer(message, images)
+      return { outcome: 'injected' }
+    }
+    if (idleBehavior === 'promptRequired') return { outcome: 'promptRequired', reason: 'noRunningTurn' }
+
+    this.prompt({ sessionId, prompt }).catch(() => {})
+    return { outcome: 'startedNewTurn' }
   }
 
   async newSession(params: NewSessionRequest) {
