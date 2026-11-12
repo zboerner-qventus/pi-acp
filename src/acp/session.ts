@@ -74,6 +74,10 @@ const EXTENSION_UI_RAW_INPUT_KEYS = ['title', 'message', 'options', 'placeholder
 const CHOICE_OPTION_PREFIX = 'choice-'
 // Clients render permission options as single-line buttons that neither wrap nor ellipsize.
 const OPTION_LABEL_MAX = 72
+// pi doesn't retry these: "aborted" is how a stream the sandbox's proxy cut off ends.
+const DROPPED = /^aborted$|\b(ECONNRESET|ETIMEDOUT|EACCES|EPIPE)\b|socket hang up/i
+const RESUMES = 2
+const RESUME_PROMPT = 'The connection to the model dropped mid-reply. Continue where you left off.'
 
 /**
  * Pi hands us permission choices as plain labels (pi's own gates and extensions such as
@@ -464,6 +468,7 @@ export class PiAcpSession {
   // recover, and retry status text omits raw errors on purpose); this is flushed to
   // the client only at terminal points: retry exhaustion or `agent_settled`.
   private lastAssistantError: string | null = null
+  private resumes = 0
 
   // For ACP diff support: capture file contents before edit/write mutations,
   // then emit ToolCallContent {type:"diff"}. Compatible structured edit/write
@@ -842,6 +847,7 @@ export class PiAcpSession {
     this.cancelRequested = false
     this.inAgentLoop = false
     this.lastAssistantError = null
+    this.resumes = 0
 
     this.transcript.push({ role: 'user', text: t.message })
     this.currentAssistantText = ''
@@ -1265,6 +1271,17 @@ export class PiAcpSession {
       }
 
       case 'agent_settled': {
+        const dropped = this.lastAssistantError
+        if (dropped && !this.cancelRequested && DROPPED.test(dropped) && this.resumes < RESUMES) {
+          this.resumes += 1
+          this.lastAssistantError = null
+          this.emitNotice(`Connection dropped (${dropped}); continuing`, 'resume', 'warning')
+          this.proc.prompt(RESUME_PROMPT).catch(err => {
+            this.emitNotice(`Couldn't continue: ${errorText(err)}`, 'resume', 'error')
+            void this.settleTurn()
+          })
+          break
+        }
         // A turn that settled with its final assistant message in error state produced
         // no visible output; surface the provider error so the thread isn't silently
         // dead (#92). Retry-exhaustion errors were already reported at `auto_retry_end`.

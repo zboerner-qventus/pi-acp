@@ -143,3 +143,67 @@ test('PiAcpSession: fresh turn does not inherit a stale error from a previous tu
   const texts = chunkTexts(conn)
   assert.equal(texts.filter(t => t.includes('boom')).length, 1)
 })
+
+test('PiAcpSession: a dropped stream is continued in the same turn, at most twice', async () => {
+  const { conn, proc, session } = makeSession()
+
+  const turn = session.prompt('hello')
+  await new Promise(r => setTimeout(r, 0))
+  const drop = () => {
+    proc.emit({ type: 'agent_start' } as any)
+    proc.emit({
+      type: 'message_end',
+      message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'aborted' }
+    } as any)
+    proc.emit({ type: 'agent_end' } as any)
+    proc.emit({ type: 'agent_settled' } as any)
+  }
+  let settled = false
+  void turn.then(() => (settled = true))
+
+  drop()
+  await new Promise(r => setTimeout(r, 0))
+  drop()
+  await new Promise(r => setTimeout(r, 0))
+  assert.equal(settled, false, 'still the same turn')
+  assert.equal(proc.prompts.length, 3)
+  assert.match(proc.prompts[1]!.message, /Continue where you left off/)
+  const resumed = conn.updates.find(u => (u.update as any).content?.text?.startsWith('Connection dropped'))
+  assert.deepEqual((resumed!.update as any)._meta, { piAcp: { notify: { level: 'warning', source: 'resume' } } })
+
+  drop()
+  assert.equal(await turn, 'end_turn')
+  assert.equal(proc.prompts.length, 3, 'gives up after two')
+  assert.ok(chunkTexts(conn).some(t => t === 'Provider error: aborted'))
+})
+
+test('PiAcpSession: a provider error that is not a dropped connection is not continued', async () => {
+  const { proc, session } = makeSession()
+
+  const turn = session.prompt('hello')
+  await new Promise(r => setTimeout(r, 0))
+  proc.emit({ type: 'agent_start' } as any)
+  proc.emit({
+    type: 'message_end',
+    message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: '400 invalid_request_error' }
+  } as any)
+  proc.emit({ type: 'agent_settled' } as any)
+  assert.equal(await turn, 'end_turn')
+  assert.equal(proc.prompts.length, 1)
+})
+
+test('PiAcpSession: a cancelled turn is not continued', async () => {
+  const { proc, session } = makeSession()
+
+  const turn = session.prompt('hello')
+  await new Promise(r => setTimeout(r, 0))
+  proc.emit({ type: 'agent_start' } as any)
+  await session.cancel()
+  proc.emit({
+    type: 'message_end',
+    message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'aborted' }
+  } as any)
+  proc.emit({ type: 'agent_settled' } as any)
+  assert.equal(await turn, 'cancelled')
+  assert.equal(proc.prompts.length, 1)
+})
