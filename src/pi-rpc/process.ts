@@ -52,6 +52,7 @@ type PiRpcCommand =
   | { type: 'switch_session'; id?: string; sessionPath: string }
   // Messages
   | { type: 'get_messages'; id?: string }
+  | { type: 'get_entries'; id?: string; since?: string }
   // Commands
   | { type: 'get_commands'; id?: string }
 
@@ -76,6 +77,10 @@ export type PiRpcEvent = Record<string, unknown>
  * prompt or a session/new response from completing.
  */
 export const SESSION_STATS_TIMEOUT_MS = 1_000
+
+export const GET_ENTRIES_TIMEOUT_MS = 5_000
+
+export type PiEntriesPage = { entries: unknown[]; leafId: string | null }
 
 /**
  * Shape of `stats.contextUsage` in pi's `get_session_stats` response.
@@ -365,6 +370,16 @@ export class PiRpcProcess {
     const res = await this.request({ type: 'get_messages' })
     if (!res.success) throw new Error(`pi get_messages failed: ${res.error ?? JSON.stringify(res.data)}`)
     return res.data
+  }
+
+  async getEntries(since?: string): Promise<PiEntriesPage> {
+    const res = await this.request({ type: 'get_entries', since }, { timeoutMs: GET_ENTRIES_TIMEOUT_MS })
+    if (!res.success) throw new Error(`pi get_entries failed: ${res.error ?? JSON.stringify(res.data)}`)
+    const data = res.data as { entries?: unknown; leafId?: unknown } | undefined
+    return {
+      entries: Array.isArray(data?.entries) ? data.entries : [],
+      leafId: typeof data?.leafId === 'string' ? data.leafId : null
+    }
   }
 
   async getCommands(): Promise<unknown> {

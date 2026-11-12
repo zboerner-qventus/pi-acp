@@ -97,6 +97,21 @@ export class FakePiRpcProcess {
     return { messages: [] }
   }
 
+  // Mirrors pi's RPC `get_entries`: entries after `since`, error when `since` is unknown.
+  entries: Array<{ id: string } & Record<string, unknown>> = []
+  getEntriesCalls: Array<string | undefined> = []
+
+  async getEntries(since?: string): Promise<{ entries: unknown[]; leafId: string | null }> {
+    this.getEntriesCalls.push(since)
+    let entries = this.entries
+    if (since !== undefined) {
+      const i = entries.findIndex(e => e.id === since)
+      if (i === -1) throw new Error(`pi get_entries failed: Entry not found: ${since}`)
+      entries = entries.slice(i + 1)
+    }
+    return { entries, leafId: this.entries.at(-1)?.id ?? null }
+  }
+
   async getSessionStats(): Promise<PiSessionStats> {
     this.getSessionStatsCount += 1
     if (this.sessionStatsError) throw this.sessionStatsError

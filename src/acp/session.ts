@@ -13,6 +13,14 @@ import { readFileSync } from 'node:fs'
 import { isAbsolute, resolve as resolvePath } from 'node:path'
 import { PiRpcProcess, PiRpcSpawnError, type PiRpcEvent, type PiSessionStats } from '../pi-rpc/process.js'
 import { maybeAuthRequiredError } from './auth-required.js'
+import {
+  UsageNoticeTracker,
+  formatCompactionCostNotice,
+  toAssistantMessage,
+  toUsage,
+  type PiAssistantMessage
+} from './cache-notices.js'
+import { getShowCacheMissNotices } from './pi-settings.js'
 import { SessionStore } from './session-store.js'
 import { expandSlashCommand, type FileSlashCommand } from './slash-commands.js'
 import {
@@ -482,6 +490,9 @@ export class PiAcpSession {
   // before completing a `session/prompt` request.
   private lastEmit: Promise<void> = Promise.resolve()
 
+  private readonly usageNotices = new UsageNoticeTracker()
+  private usageNoticeQueue: Promise<void> = Promise.resolve()
+
   constructor(opts: {
     sessionId: string
     cwd: string
@@ -710,6 +721,7 @@ export class PiAcpSession {
   private async settleTurn(): Promise<void> {
     // Ensure all updates derived from pi events (plus the final usage update) are
     // delivered before we resolve the ACP `session/prompt` request.
+    await this.usageNoticeQueue
     await this.publishContextUsage()
 
     this.turnCount += 1
@@ -992,6 +1004,16 @@ export class PiAcpSession {
           const text = this.currentAssistantText.trim()
           if (text) this.transcript.push({ role: 'assistant', text })
           this.currentAssistantText = ''
+
+          const ended = toAssistantMessage(message)
+          if (
+            ended &&
+            ended.stopReason !== 'aborted' &&
+            ended.stopReason !== 'error' &&
+            getShowCacheMissNotices(this.cwd)
+          ) {
+            this.usageNoticeQueue = this.usageNoticeQueue.then(() => this.emitUsageNotices(ended)).catch(() => {})
+          }
         }
         break
       }
@@ -1172,10 +1194,7 @@ export class PiAcpSession {
       }
 
       case 'auto_retry_start': {
-        this.emit({
-          sessionUpdate: 'agent_message_chunk',
-          content: { type: 'text', text: formatAutoRetryMessage(ev) } satisfies ContentBlock
-        })
+        this.emitNotice(formatAutoRetryMessage(ev), 'autoRetry', 'info')
         break
       }
 
@@ -1184,20 +1203,14 @@ export class PiAcpSession {
         // exhausted; claiming "resuming" there is wrong and hides the only diagnostic.
         const success = (ev as { success?: boolean }).success !== false
         if (success) {
-          this.emit({
-            sessionUpdate: 'agent_message_chunk',
-            content: { type: 'text', text: 'Retry finished, resuming.' } satisfies ContentBlock
-          })
+          this.emitNotice('Retry finished, resuming.', 'autoRetry', 'info')
         } else {
           const attempt = Number((ev as { attempt?: unknown }).attempt)
           const finalError = (ev as { finalError?: unknown }).finalError
           const detail =
             typeof finalError === 'string' && finalError ? finalError : (this.lastAssistantError ?? 'unknown error')
           const attempts = Number.isFinite(attempt) ? ` after ${attempt} attempts` : ''
-          this.emit({
-            sessionUpdate: 'agent_message_chunk',
-            content: { type: 'text', text: `Retry failed${attempts}: ${detail}` } satisfies ContentBlock
-          })
+          this.emitNotice(`Retry failed${attempts}: ${detail}`, 'autoRetry', 'error')
           // Reported here; don't repeat it at `agent_settled`.
           this.lastAssistantError = null
         }
@@ -1205,24 +1218,24 @@ export class PiAcpSession {
       }
 
       case 'auto_compaction_start': {
-        this.emit({
-          sessionUpdate: 'agent_message_chunk',
-          content: {
-            type: 'text',
-            text: 'Context nearing limit, running automatic compaction...'
-          } satisfies ContentBlock
-        })
+        this.emitNotice('Context nearing limit, running automatic compaction...', 'compaction', 'info')
         break
       }
 
       case 'auto_compaction_end': {
-        this.emit({
-          sessionUpdate: 'agent_message_chunk',
-          content: {
-            type: 'text',
-            text: 'Automatic compaction finished; context was summarized to continue the session.'
-          } satisfies ContentBlock
-        })
+        this.emitNotice(
+          'Automatic compaction finished; context was summarized to continue the session.',
+          'compaction',
+          'info'
+        )
+        break
+      }
+
+      case 'compaction_end': {
+        const usage = toUsage((ev as { result?: { usage?: unknown } }).result?.usage)
+        if (!(ev as { aborted?: unknown }).aborted && usage && getShowCacheMissNotices(this.cwd)) {
+          this.emitNotice(formatCompactionCostNotice(usage), 'compactionCost')
+        }
         break
       }
 
@@ -1249,10 +1262,7 @@ export class PiAcpSession {
         // no visible output; surface the provider error so the thread isn't silently
         // dead (#92). Retry-exhaustion errors were already reported at `auto_retry_end`.
         if (this.lastAssistantError && !this.cancelRequested) {
-          this.emit({
-            sessionUpdate: 'agent_message_chunk',
-            content: { type: 'text', text: `Provider error: ${this.lastAssistantError}` } satisfies ContentBlock
-          })
+          this.emitNotice(`Provider error: ${this.lastAssistantError}`, 'providerError', 'error')
           this.lastAssistantError = null
         }
         void this.settleTurn()
@@ -1261,6 +1271,41 @@ export class PiAcpSession {
 
       default:
         break
+    }
+  }
+
+  private emitNotice(text: string, source: string, level: string = 'warning'): void {
+    this.emit({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text } satisfies ContentBlock,
+      _meta: { piAcp: { notify: { level, source } } }
+    })
+  }
+
+  private async emitUsageNotices(message: PiAssistantMessage): Promise<void> {
+    let page
+    try {
+      page = await this.proc.getEntries(this.usageNotices.cursor)
+    } catch (e) {
+      // The cursor entry is gone when pi switched to another session file.
+      if (this.usageNotices.cursor === undefined) throw e
+      this.usageNotices.reset()
+      page = await this.proc.getEntries()
+    }
+    const cacheRead = message.usage.cacheRead > 0 ? undefined : await this.modelCacheReadCost(message)
+    for (const notice of this.usageNotices.noticesFor(page.entries, page.leafId, message, cacheRead)) {
+      this.emitNotice(notice.text, notice.source)
+    }
+  }
+
+  private async modelCacheReadCost(message: PiAssistantMessage): Promise<number | undefined> {
+    try {
+      const data = (await this.proc.getAvailableModels()) as { models?: unknown } | null
+      const models = Array.isArray(data?.models) ? (data.models as Array<Record<string, any>>) : []
+      const cost = models.find(m => m?.provider === message.provider && m?.id === message.model)?.cost?.cacheRead
+      return typeof cost === 'number' ? cost : undefined
+    } catch {
+      return undefined
     }
   }
 
@@ -1287,11 +1332,11 @@ export class PiAcpSession {
     }
 
     if (method === 'notify') {
-      this.emit({
-        sessionUpdate: 'agent_message_chunk',
-        content: { type: 'text', text: stringProp(ev, 'message') ?? 'Pi notification' } satisfies ContentBlock,
-        _meta: { piAcp: { notify: { level: stringProp(ev, 'notifyType') ?? 'info' } } }
-      })
+      this.emitNotice(
+        stringProp(ev, 'message') ?? 'Pi notification',
+        'extension',
+        stringProp(ev, 'notifyType') ?? 'info'
+      )
       await this.proc.sendExtensionUiResponse({ id, cancelled: true })
       return
     }

@@ -367,7 +367,8 @@ test('PiAcpSession: emits agent_message_chunk for auto_retry_start with attempt/
   assert.equal(conn.updates.length, 1)
   assert.deepEqual(conn.updates[0]!.update, {
     sessionUpdate: 'agent_message_chunk',
-    content: { type: 'text', text: 'Retrying (attempt 2/5, waiting 2s)...' }
+    content: { type: 'text', text: 'Retrying (attempt 2/5, waiting 2s)...' },
+    _meta: { piAcp: { notify: { level: 'info', source: 'autoRetry' } } }
   })
 })
 
@@ -391,7 +392,8 @@ test('PiAcpSession: formats a positive sub-second auto_retry_start delay as wait
   assert.equal(conn.updates.length, 1)
   assert.deepEqual(conn.updates[0]!.update, {
     sessionUpdate: 'agent_message_chunk',
-    content: { type: 'text', text: 'Retrying (attempt 1/3, waiting 1s)...' }
+    content: { type: 'text', text: 'Retrying (attempt 1/3, waiting 1s)...' },
+    _meta: { piAcp: { notify: { level: 'info', source: 'autoRetry' } } }
   })
 })
 
@@ -415,7 +417,8 @@ test('PiAcpSession: falls back to a generic retry message when auto_retry_start 
   assert.equal(conn.updates.length, 1)
   assert.deepEqual(conn.updates[0]!.update, {
     sessionUpdate: 'agent_message_chunk',
-    content: { type: 'text', text: 'Retrying...' }
+    content: { type: 'text', text: 'Retrying...' },
+    _meta: { piAcp: { notify: { level: 'info', source: 'autoRetry' } } }
   })
 })
 
@@ -468,7 +471,8 @@ test('PiAcpSession: emits agent_message_chunk for auto_retry_end', async () => {
   assert.equal(conn.updates.length, 1)
   assert.deepEqual(conn.updates[0]!.update, {
     sessionUpdate: 'agent_message_chunk',
-    content: { type: 'text', text: 'Retry finished, resuming.' }
+    content: { type: 'text', text: 'Retry finished, resuming.' },
+    _meta: { piAcp: { notify: { level: 'info', source: 'autoRetry' } } }
   })
 })
 
@@ -492,7 +496,8 @@ test('PiAcpSession: emits agent_message_chunk for auto_compaction_start', async 
   assert.equal(conn.updates.length, 1)
   assert.deepEqual(conn.updates[0]!.update, {
     sessionUpdate: 'agent_message_chunk',
-    content: { type: 'text', text: 'Context nearing limit, running automatic compaction...' }
+    content: { type: 'text', text: 'Context nearing limit, running automatic compaction...' },
+    _meta: { piAcp: { notify: { level: 'info', source: 'compaction' } } }
   })
 })
 
@@ -519,7 +524,8 @@ test('PiAcpSession: emits agent_message_chunk for auto_compaction_end', async ()
     content: {
       type: 'text',
       text: 'Automatic compaction finished; context was summarized to continue the session.'
-    }
+    },
+    _meta: { piAcp: { notify: { level: 'info', source: 'compaction' } } }
   })
 })
 
@@ -548,7 +554,8 @@ test('PiAcpSession: preserves ordering when auto_retry_start is interleaved with
       { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'before ' } },
       {
         sessionUpdate: 'agent_message_chunk',
-        content: { type: 'text', text: 'Retrying (attempt 1/2, waiting 2s)...' }
+        content: { type: 'text', text: 'Retrying (attempt 1/2, waiting 2s)...' },
+        _meta: { piAcp: { notify: { level: 'info', source: 'autoRetry' } } }
       },
       { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'after' } }
     ]
@@ -1014,7 +1021,7 @@ test('PiAcpSession: tags extension notify chunks with severity in _meta', async 
   assert.deepEqual(conn.updates[0]!.update, {
     sessionUpdate: 'agent_message_chunk',
     content: { type: 'text', text: 'MCP: connection failed' },
-    _meta: { piAcp: { notify: { level: 'error' } } }
+    _meta: { piAcp: { notify: { level: 'error', source: 'extension' } } }
   })
   assert.deepEqual(proc.extensionUiResponses[0], { id: 'n1', cancelled: true })
 })
@@ -1043,7 +1050,7 @@ test('PiAcpSession: defaults notify severity to info when notifyType is absent',
 
   assert.equal(conn.updates.length, 1)
   assert.deepEqual((conn.updates[0]!.update as any)._meta, {
-    piAcp: { notify: { level: 'info' } }
+    piAcp: { notify: { level: 'info', source: 'extension' } }
   })
 })
 

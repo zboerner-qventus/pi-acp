@@ -43,6 +43,8 @@ test('PiAcpSession: surfaces provider error at agent_settled when final assistan
     chunkTexts(conn).some(t => t.includes('Provider error: 400 invalid_request_error: quota')),
     `expected provider error chunk, got: ${JSON.stringify(chunkTexts(conn))}`
   )
+  const chunk = conn.updates.find(u => (u.update as any).content?.text?.startsWith('Provider error:'))
+  assert.deepEqual((chunk!.update as any)._meta, { piAcp: { notify: { level: 'error', source: 'providerError' } } })
 })
 
 test('PiAcpSession: does not report an error the run recovered from', async () => {
@@ -98,6 +100,8 @@ test('PiAcpSession: reports retry exhaustion with finalError instead of "resumin
   assert.ok(!texts.some(t => t === 'Retry finished, resuming.'))
   // Already reported at auto_retry_end; must not repeat at agent_settled.
   assert.equal(texts.filter(t => t.includes('529 overloaded')).length, 1)
+  const failed = conn.updates.find(u => (u.update as any).content?.text?.startsWith('Retry failed'))
+  assert.deepEqual((failed!.update as any)._meta, { piAcp: { notify: { level: 'error', source: 'autoRetry' } } })
 })
 
 test('PiAcpSession: non-auth prompt rejection reaches the client as text', async () => {

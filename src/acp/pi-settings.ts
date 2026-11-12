@@ -128,3 +128,7 @@ export function getQuietStartup(cwd: string): boolean {
 
   return false
 }
+
+export function getShowCacheMissNotices(cwd: string): boolean {
+  return getMergedSettings(cwd).showCacheMissNotices === true
+}
