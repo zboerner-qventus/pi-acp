@@ -112,6 +112,8 @@ type SpawnParams = {
   piCommand?: string
   /** If set, pi will persist the session to this exact file (via `--session <path>`). */
   sessionPath?: string
+  /** Absolute directories the session works in besides `cwd`. */
+  additionalDirectories?: string[]
 }
 
 export class PiRpcProcess {
@@ -170,6 +172,16 @@ export class PiRpcProcess {
     // (e.g. MCP extensions, prompt templates for workflows).
     const args = ['--mode', 'rpc', '--no-themes']
     if (params.sessionPath) args.push('--session', params.sessionPath)
+    if (params.additionalDirectories?.length) {
+      args.push(
+        '--append-system-prompt',
+        [
+          'Besides the working directory, this session also works in these directories:',
+          ...params.additionalDirectories,
+          'Paths in them are absolute. Each may have its own AGENTS.md; read it before working there.'
+        ].join('\n')
+      )
+    }
 
     // Windows cmd launchers need shell escaping; direct executables use native argv.
     const start = shouldUseShellForPiCommand(cmd) ? crossSpawn : spawn

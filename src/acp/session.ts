@@ -45,6 +45,7 @@ type SessionCreateParams = {
   conn: AgentSideConnection
   fileCommands?: import('./slash-commands.js').FileSlashCommand[]
   piCommand?: string
+  additionalDirectories?: string[]
 }
 
 export type StopReason = 'end_turn' | 'cancelled' | 'error'
@@ -350,7 +351,8 @@ export class SessionManager {
     try {
       proc = await PiRpcProcess.spawn({
         cwd: params.cwd,
-        piCommand: params.piCommand
+        piCommand: params.piCommand,
+        additionalDirectories: params.additionalDirectories
       })
     } catch (e) {
       if (e instanceof PiRpcSpawnError) {
@@ -370,7 +372,12 @@ export class SessionManager {
     const sessionFile = typeof state?.sessionFile === 'string' ? state.sessionFile : null
 
     if (sessionFile) {
-      this.store.upsert({ sessionId, cwd: params.cwd, sessionFile })
+      this.store.upsert({
+        sessionId,
+        cwd: params.cwd,
+        sessionFile,
+        additionalDirectories: params.additionalDirectories
+      })
     }
 
     const session = new PiAcpSession({

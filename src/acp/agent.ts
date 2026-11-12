@@ -45,7 +45,7 @@ import { loadSlashCommands, parseCommandArgs, toAvailableCommands } from './slas
 import { filterModelsByEnabledPatterns, getAgentDir, getEnableSkillCommands, getQuietStartup } from './pi-settings.js'
 import { toAvailableCommandsFromPiGetCommands } from './pi-commands.js'
 import { maybeAuthRequiredError } from './auth-required.js'
-import { isAbsolute } from 'node:path'
+import { isAbsolute, resolve } from 'node:path'
 import { existsSync, readFileSync, realpathSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import type { AvailableCommand } from '@agentclientprotocol/sdk'
 import { join, dirname, basename } from 'node:path'
@@ -156,10 +156,12 @@ export class PiAcpAgent implements ACPAgent {
     this.store.delete(sessionId)
   }
 
-  private findStoredSession(sessionId: string): { cwd: string; sessionFile: string } | null {
+  private findStoredSession(
+    sessionId: string
+  ): { cwd: string; sessionFile: string; additionalDirectories?: string[] } | null {
     const stored = this.store.get(sessionId)
     if (stored?.cwd && stored?.sessionFile) {
-      return { cwd: stored.cwd, sessionFile: stored.sessionFile }
+      return { cwd: stored.cwd, sessionFile: stored.sessionFile, additionalDirectories: stored.additionalDirectories }
     }
 
     const piSession = findPiSession(sessionId)
@@ -179,7 +181,7 @@ export class PiAcpAgent implements ACPAgent {
 
   private async restoreSession(
     sessionId: string,
-    opts?: { cwd?: string; mcpServers?: LoadSessionRequest['mcpServers'] }
+    opts?: { cwd?: string; mcpServers?: LoadSessionRequest['mcpServers']; additionalDirectories?: string[] }
   ): Promise<PiAcpSession> {
     const existing = this.sessions.maybeGet(sessionId)
     if (existing) return existing
@@ -194,13 +196,15 @@ export class PiAcpAgent implements ACPAgent {
       }
 
       const cwd = opts?.cwd ?? stored.cwd
+      const additionalDirectories = opts?.additionalDirectories ?? stored.additionalDirectories ?? []
 
       let proc: PiRpcProcess
       try {
         proc = await PiRpcProcess.spawn({
           cwd,
           sessionPath: stored.sessionFile,
-          piCommand: process.env.PI_ACP_PI_COMMAND
+          piCommand: process.env.PI_ACP_PI_COMMAND,
+          additionalDirectories
         })
       } catch (e: any) {
         if (e?.name === 'PiRpcSpawnError') {
@@ -220,7 +224,7 @@ export class PiAcpAgent implements ACPAgent {
       })
 
       this.lastSessionCwd = cwd
-      this.store.upsert({ sessionId, cwd, sessionFile: stored.sessionFile })
+      this.store.upsert({ sessionId, cwd, sessionFile: stored.sessionFile, additionalDirectories })
 
       const title = readPiSessionTitle(stored.sessionFile)
       if (title) await session.publishTitle(title, null)
@@ -266,7 +270,8 @@ export class PiAcpAgent implements ACPAgent {
           // **UNSTABLE** ACP capability used by Zed's codex-acp adapter.
           // Enables a native session picker in clients that support it.
           list: {},
-          delete: {}
+          delete: {},
+          additionalDirectories: {}
         }
       },
       _meta: { steering: { supported: true } }
@@ -304,6 +309,7 @@ export class PiAcpAgent implements ACPAgent {
     if (!isAbsolute(params.cwd)) {
       throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`)
     }
+    const additionalDirectories = normalizeAdditionalDirectories(params.cwd, params.additionalDirectories)
 
     this.lastSessionCwd = params.cwd
 
@@ -316,7 +322,8 @@ export class PiAcpAgent implements ACPAgent {
       mcpServers: params.mcpServers,
       conn: this.conn,
       fileCommands,
-      piCommand: process.env.PI_ACP_PI_COMMAND
+      piCommand: process.env.PI_ACP_PI_COMMAND,
+      additionalDirectories
     })
 
     // Fetch state + models once (parallel) to reduce startup latency.
@@ -950,6 +957,7 @@ export class PiAcpAgent implements ACPAgent {
     const sessions: SessionInfo[] = page.map(s => ({
       sessionId: s.sessionId,
       cwd: s.cwd,
+      additionalDirectories: this.store.get(s.sessionId)?.additionalDirectories,
       title: s.title,
       updatedAt: s.updatedAt
     }))
@@ -963,6 +971,7 @@ export class PiAcpAgent implements ACPAgent {
     if (!isAbsolute(params.cwd)) {
       throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`)
     }
+    const additionalDirectories = normalizeAdditionalDirectories(params.cwd, params.additionalDirectories)
 
     // If the client is re-loading a session that is already active, tear down the existing
     // pi subprocess so we can start fresh and re-advertise commands reliably.
@@ -979,7 +988,8 @@ export class PiAcpAgent implements ACPAgent {
     const enableSkillCommands = getEnableSkillCommands(params.cwd)
     const session = await this.restoreSession(params.sessionId, {
       cwd: params.cwd,
-      mcpServers: params.mcpServers
+      mcpServers: params.mcpServers,
+      additionalDirectories
     })
     const proc = session.proc
     let configuration: Awaited<ReturnType<typeof getSessionConfiguration>>
@@ -1000,7 +1010,8 @@ export class PiAcpAgent implements ACPAgent {
     this.store.upsert({
       sessionId: params.sessionId,
       cwd: params.cwd,
-      sessionFile: stored.sessionFile
+      sessionFile: stored.sessionFile,
+      additionalDirectories
     })
 
     // Replay full conversation history.
@@ -1272,6 +1283,18 @@ async function getThinkingState(
       description: null
     }))
   }
+}
+
+function normalizeAdditionalDirectories(cwd: string, dirs: string[] | undefined): string[] {
+  const out: string[] = []
+  for (const dir of dirs ?? []) {
+    if (!isAbsolute(dir)) {
+      throw RequestError.invalidParams(`additionalDirectories entries must be absolute paths: ${dir}`)
+    }
+    const abs = resolve(dir)
+    if (abs !== resolve(cwd) && !out.includes(abs)) out.push(abs)
+  }
+  return out
 }
 
 async function getSessionConfiguration(
