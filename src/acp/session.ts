@@ -463,6 +463,10 @@ export class PiAcpSession {
   // completes only when `agent_settled` is emitted.
   private inAgentLoop = false
 
+  // Set from pi's `agent_settled` until the ACP turn is resolved. Pi is idle then, so a
+  // steer would sit in pi's queue until the next prompt: the turn no longer counts as running.
+  private settling = false
+
   // Last provider error seen on an assistant `message_end` in the current turn.
   // Transient errors are deliberately NOT surfaced when they occur (auto-retry may
   // recover, and retry status text omits raw errors on purpose); this is flushed to
@@ -607,8 +611,9 @@ export class PiAcpSession {
     await this.proc.abort()
   }
 
+  /** Whether a steer would still reach the running turn (pi hasn't settled). */
   isTurnRunning(): boolean {
-    return this.pendingTurn !== null
+    return this.pendingTurn !== null && !this.settling
   }
 
   wasCancelRequested(): boolean {
@@ -743,6 +748,7 @@ export class PiAcpSession {
     this.pendingTurn?.resolve(reason)
     this.pendingTurn = null
     this.inAgentLoop = false
+    this.settling = false
 
     // Start next queued prompt, if any.
     const next = this.turnQueue.shift()
@@ -846,6 +852,7 @@ export class PiAcpSession {
   private startTurn(t: QueuedTurn): void {
     this.cancelRequested = false
     this.inAgentLoop = false
+    this.settling = false
     this.lastAssistantError = null
     this.resumes = 0
 
@@ -1289,6 +1296,7 @@ export class PiAcpSession {
           this.emitNotice(`Provider error: ${this.lastAssistantError}`, 'providerError', 'error')
           this.lastAssistantError = null
         }
+        this.settling = true
         void this.settleTurn()
         break
       }
